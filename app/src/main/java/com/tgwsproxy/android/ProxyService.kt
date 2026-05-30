@@ -48,7 +48,7 @@ class ProxyService : Service() {
             ?: prefs.getString(EXTRA_FAKE_TLS_DOMAIN, "").orEmpty()
         val cfDomain = intent?.getStringExtra(EXTRA_CF_DOMAIN)
             ?: prefs.getString(EXTRA_CF_DOMAIN, "").orEmpty()
-        val cfEnabled = intent?.getBooleanExtra(EXTRA_CF_ENABLED, prefs.getBoolean(EXTRA_CF_ENABLED, true)) ?: true
+        val cfEnabled = intent?.getBooleanExtra(EXTRA_CF_ENABLED, prefs.getBoolean(EXTRA_CF_ENABLED, false)) ?: false
 
         prefs.edit()
             .putString(EXTRA_SECRET, secret)

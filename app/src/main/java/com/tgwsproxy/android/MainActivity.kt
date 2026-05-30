@@ -97,11 +97,11 @@ fun ProxyScreen() {
     var logLines by remember { mutableStateOf(emptyList<String>()) }
     val secret = rememberSaveable { context.getOrCreateProxySecret() }
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
-    var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, true)) }
+    var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, false)) }
     var cfDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_DOMAIN, "")) }
-    var githubRepo by rememberSaveable { mutableStateOf(context.getProxyPref(PREF_GITHUB_REPO, UpdateChecker.DEFAULT_GITHUB_REPO)) }
     var updateMessage by remember { mutableStateOf("Current version: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
+    var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
     val link = remember(secret, fakeTlsDomain) { ProxyConfig.telegramProxyLink(secret, fakeTlsDomain) }
 
     DisposableEffect(Unit) {
@@ -120,6 +120,29 @@ fun ProxyScreen() {
                     logLines = logs
                 }
                 delay(1000)
+            }
+        }
+        onDispose { job.cancel() }
+    }
+
+    DisposableEffect(Unit) {
+        val scope = CoroutineScope(Dispatchers.IO)
+        val job = scope.launch {
+            val result = runCatching {
+                val current = UpdateChecker.currentVersion(context)
+                UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
+            }
+            withContext(Dispatchers.Main) {
+                result.onSuccess { update ->
+                    requiredUpdate = update
+                    if (update != null) {
+                        context.stopService(Intent(context, ProxyService::class.java))
+                        proxyStatus = ProxyStatus(false)
+                        updateMessage = "Required update ${update.version}. Install it to continue."
+                    }
+                }.onFailure {
+                    updateMessage = "Update check failed. Current version: ${UpdateChecker.currentVersion(context)}"
+                }
             }
         }
         onDispose { job.cancel() }
@@ -155,20 +178,16 @@ fun ProxyScreen() {
                     enabled = !proxyStatus.isRunning,
                 )
                 UpdateCard(
-                    githubRepo = githubRepo,
-                    onGithubRepoChange = {
-                        githubRepo = it.trim()
-                        context.saveProxyPref(PREF_GITHUB_REPO, githubRepo)
-                    },
                     message = updateMessage,
                     busy = updateBusy,
+                    required = requiredUpdate != null,
                     onCheck = {
                         updateBusy = true
-                        updateMessage = "Checking GitHub Releases..."
+                        updateMessage = if (requiredUpdate != null) "Downloading required update..." else "Checking GitHub Releases..."
                         CoroutineScope(Dispatchers.IO).launch {
                             val result = runCatching {
                                 val current = UpdateChecker.currentVersion(context)
-                                val update = UpdateChecker.checkLatest(githubRepo, current)
+                                val update = requiredUpdate ?: UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
                                 if (update == null) {
                                     "No update found. Current version: $current"
                                 } else {
@@ -184,9 +203,10 @@ fun ProxyScreen() {
                             }
                         }
                     },
-                )
+              )
                 ControlButtons(
                     running = proxyStatus.isRunning,
+                    locked = requiredUpdate != null,
                     onStart = {
                         context.startProxyService(secret, fakeTlsDomain, cfEnabled, cfDomain)
                         proxyStatus = ProxyStatus(true)
@@ -221,10 +241,9 @@ fun ProxyScreen() {
 
 @Composable
 private fun UpdateCard(
-    githubRepo: String,
-    onGithubRepoChange: (String) -> Unit,
     message: String,
     busy: Boolean,
+    required: Boolean,
     onCheck: () -> Unit,
 ) {
     Card(
@@ -233,17 +252,20 @@ private fun UpdateCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Updates", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
-                value = githubRepo,
-                onValueChange = onGithubRepoChange,
-                singleLine = true,
-                label = { Text("GitHub repo") },
-                placeholder = { Text("owner/repository") },
+            Text(
+                if (required) "Required update" else "Update check",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (required) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
             )
             Button(modifier = Modifier.fillMaxWidth(), onClick = onCheck, enabled = !busy) {
-                Text(if (busy) "Checking..." else "Check for update")
+                Text(
+                    when {
+                        busy -> "Working..."
+                        required -> "Install required update"
+                        else -> "Check for update"
+                    }
+                )
             }
             Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -388,9 +410,9 @@ private fun SettingsCard(
 }
 
 @Composable
-private fun ControlButtons(running: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
+private fun ControlButtons(running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(modifier = Modifier.weight(1f), onClick = onStart, enabled = !running) { Text("Start") }
+        Button(modifier = Modifier.weight(1f), onClick = onStart, enabled = !running && !locked) { Text("Start") }
         OutlinedButton(modifier = Modifier.weight(1f), onClick = onStop, enabled = running) { Text("Stop") }
     }
 }
@@ -446,7 +468,6 @@ private fun Context.copyToClipboard(text: String) {
 }
 
 private const val PROXY_PREFS = "proxy"
-private const val PREF_GITHUB_REPO = "github_repo"
 
 @Preview(showBackground = true)
 @Composable

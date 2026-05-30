@@ -15,7 +15,7 @@ data class UpdateInfo(
 )
 
 object UpdateChecker {
-    const val DEFAULT_GITHUB_REPO = "manyl626/TgwsProxyAndroid"
+    const val DEFAULT_GITHUB_REPO = "wqeww0001/TgwsProxyAndroid"
 
     fun currentVersion(context: Context): String {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
