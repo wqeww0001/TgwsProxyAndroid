@@ -85,7 +85,7 @@ class TgProxyServer(
             val dcKey = dcKey(parsed.dcId, parsed.isMedia)
             ProxyLogger.i("Client connected: DC${parsed.dcId}${if (parsed.isMedia) " media" else ""}, ${parsed.protoTag}")
 
-            if (config.directTcpFirst || !config.dcRedirects.containsKey(parsed.dcId) || wsBlacklist.contains(dcKey)) {
+            if (config.directTcpFirst || wsBlacklist.contains(dcKey)) {
                 bridgeFallback(init.io, parsed.dcId, parsed.isMedia, relayInit, ctx)
                 return
             }
@@ -147,7 +147,6 @@ class TgProxyServer(
 
     private fun connectWebSocket(dcId: Int, isMedia: Boolean): WsRoute? {
         val dcKey = dcKey(dcId, isMedia)
-        val targetIp = config.dcRedirects[dcId] ?: return null
         val domains = wsDomains(dcId, isMedia)
         wsPool.take(dcId, isMedia)?.let {
             ProxyStats.poolHits.incrementAndGet()
@@ -166,7 +165,7 @@ class TgProxyServer(
                 continue
             }
             val ws = runCatching {
-                RawWebSocket.connect(targetIp, domain, timeout)
+                RawWebSocket.connect(config.dcRedirects[dcId] ?: domain, domain, timeout)
             }.onFailure { ex ->
                 ProxyStats.wsErrors.incrementAndGet()
                 allRedirects = false
