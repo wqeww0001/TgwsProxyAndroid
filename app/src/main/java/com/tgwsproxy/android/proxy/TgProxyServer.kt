@@ -85,7 +85,7 @@ class TgProxyServer(
             val dcKey = dcKey(parsed.dcId, parsed.isMedia)
             ProxyLogger.i("Client connected: DC${parsed.dcId}${if (parsed.isMedia) " media" else ""}, ${parsed.protoTag}")
 
-            if (!config.dcRedirects.containsKey(parsed.dcId) || wsBlacklist.contains(dcKey)) {
+            if (config.directTcpFirst || !config.dcRedirects.containsKey(parsed.dcId) || wsBlacklist.contains(dcKey)) {
                 bridgeFallback(init.io, parsed.dcId, parsed.isMedia, relayInit, ctx)
                 return
             }

@@ -7,6 +7,7 @@ data class ProxyRuntimeConfig(
     val dcRedirects: Map<Int, String> = mapOf(2 to "149.154.167.220", 4 to "149.154.167.220"),
     val bufferSize: Int = 256 * 1024,
     val poolSize: Int = 0,
+    val directTcpFirst: Boolean = true,
     val fallbackCfProxy: Boolean = false,
     val fallbackCfProxyPriority: Boolean = false,
     val cfProxyUserDomain: String = "",
