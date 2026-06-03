@@ -155,7 +155,7 @@ class TgProxyServer(
         ProxyStats.poolMisses.incrementAndGet()
 
         val now = System.currentTimeMillis()
-        val timeout = if ((dcFailUntil[dcKey] ?: 0L) > now) WS_FAIL_TIMEOUT_MS else 10_000
+        val timeout = if ((dcFailUntil[dcKey] ?: 0L) > now) WS_FAIL_TIMEOUT_MS else WS_CONNECT_TIMEOUT_MS
         var sawRedirect = false
         var allRedirects = true
         for (domain in domains) {
@@ -233,19 +233,23 @@ class TgProxyServer(
     }
 
     private fun bridgeTcpFallback(client: ClientIo, dcId: Int, relayInit: ByteArray, ctx: CryptoContext): Boolean {
-        val fallbackIp = defaultDcIps[dcId] ?: return false
-        return runCatching {
-            Socket().use { telegram ->
-                telegram.connect(InetSocketAddress(fallbackIp, 443), TCP_CONNECT_TIMEOUT_MS)
-                telegram.tcpNoDelay = true
-                telegram.soTimeout = CLIENT_READ_TIMEOUT_MS
-                telegram.outputStream.write(relayInit)
-                telegram.outputStream.flush()
-                ProxyStats.connectionsTcpFallback.incrementAndGet()
-                ProxyLogger.i("TCP fallback connected DC$dcId via $fallbackIp")
-                bridgeTcp(client, telegram, ctx)
-            }
-        }.onFailure { ProxyLogger.w("TCP fallback failed DC$dcId", it) }.isSuccess
+        val fallbackIps = defaultDcIps[dcId].orEmpty()
+        for (fallbackIp in fallbackIps) {
+            val connected = runCatching {
+                Socket().use { telegram ->
+                    telegram.connect(InetSocketAddress(fallbackIp, 443), TCP_CONNECT_TIMEOUT_MS)
+                    telegram.tcpNoDelay = true
+                    telegram.soTimeout = CLIENT_READ_TIMEOUT_MS
+                    telegram.outputStream.write(relayInit)
+                    telegram.outputStream.flush()
+                    ProxyStats.connectionsTcpFallback.incrementAndGet()
+                    ProxyLogger.i("TCP fallback connected DC$dcId via $fallbackIp")
+                    bridgeTcp(client, telegram, ctx)
+                }
+            }.onFailure { ProxyLogger.w("TCP fallback failed DC$dcId via $fallbackIp", it) }.isSuccess
+            if (connected) return true
+        }
+        return false
     }
 
     private fun bridgeWebSocket(
@@ -371,16 +375,17 @@ class TgProxyServer(
         private const val HANDSHAKE_LEN = 64
         private const val DC_FAIL_COOLDOWN_MS = 30_000L
         private const val WS_DOMAIN_COOLDOWN_MS = 120_000L
+        private const val WS_CONNECT_TIMEOUT_MS = 4_000
         private const val WS_FAIL_TIMEOUT_MS = 2_000
         private const val CLIENT_READ_TIMEOUT_MS = 120_000
-        private const val TCP_CONNECT_TIMEOUT_MS = 10_000
+        private const val TCP_CONNECT_TIMEOUT_MS = 4_000
         private val defaultDcIps = mapOf(
-            1 to "149.154.175.50",
-            2 to "149.154.167.51",
-            3 to "149.154.175.100",
-            4 to "149.154.167.91",
-            5 to "149.154.171.5",
-            203 to "91.105.192.100",
+            1 to listOf("149.154.175.50", "149.154.175.53"),
+            2 to listOf("149.154.167.51", "149.154.167.50", "149.154.167.91"),
+            3 to listOf("149.154.175.100", "149.154.175.117"),
+            4 to listOf("149.154.167.91", "149.154.167.92", "149.154.167.51"),
+            5 to listOf("91.108.56.130", "149.154.171.5", "149.154.170.100"),
+            203 to listOf("91.105.192.100"),
         )
     }
 }

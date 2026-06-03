@@ -46,9 +46,8 @@ class ProxyService : Service() {
 
         val fakeTlsDomain = intent?.getStringExtra(EXTRA_FAKE_TLS_DOMAIN)
             ?: prefs.getString(EXTRA_FAKE_TLS_DOMAIN, "").orEmpty()
-        val cfDomain = intent?.getStringExtra(EXTRA_CF_DOMAIN)
-            ?: prefs.getString(EXTRA_CF_DOMAIN, "").orEmpty()
-        val cfEnabled = intent?.getBooleanExtra(EXTRA_CF_ENABLED, prefs.getBoolean(EXTRA_CF_ENABLED, false)) ?: false
+        val cfDomain = ""
+        val cfEnabled = false
 
         prefs.edit()
             .putString(EXTRA_SECRET, secret)
@@ -68,8 +67,8 @@ class ProxyService : Service() {
                     host = ProxyConfig.HOST,
                     port = ProxyConfig.PORT,
                     secretHex = secret,
-                    fallbackCfProxy = cfEnabled,
-                    cfProxyUserDomain = cfDomain.trim(),
+                    fallbackCfProxy = false,
+                    cfProxyUserDomain = "",
                     fakeTlsDomain = fakeTlsDomain.trim(),
                 )
             ).also { it.start() }

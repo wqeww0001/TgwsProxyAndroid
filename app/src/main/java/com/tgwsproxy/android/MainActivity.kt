@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,7 +36,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -97,8 +95,6 @@ fun ProxyScreen() {
     var logLines by remember { mutableStateOf(emptyList<String>()) }
     val secret = rememberSaveable { context.getOrCreateProxySecret() }
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
-    var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, false)) }
-    var cfDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_DOMAIN, "")) }
     var updateMessage by remember { mutableStateOf("Current version: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -165,16 +161,6 @@ fun ProxyScreen() {
                         fakeTlsDomain = it.trim()
                         context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
                     },
-                    cfEnabled = cfEnabled,
-                    onCfEnabledChange = {
-                        cfEnabled = it
-                        context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
-                    },
-                    cfDomain = cfDomain,
-                    onCfDomainChange = {
-                        cfDomain = it.trim()
-                        context.saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cfDomain)
-                    },
                     enabled = !proxyStatus.isRunning,
                 )
                 UpdateCard(
@@ -208,7 +194,7 @@ fun ProxyScreen() {
                     running = proxyStatus.isRunning,
                     locked = requiredUpdate != null,
                     onStart = {
-                        context.startProxyService(secret, fakeTlsDomain, cfEnabled, cfDomain)
+                        context.startProxyService(secret, fakeTlsDomain)
                         proxyStatus = ProxyStatus(true)
                     },
                     onStop = {
@@ -370,10 +356,6 @@ private fun ConnectionCard(secret: String, link: String, status: ProxyStatus) {
 private fun SettingsCard(
     fakeTlsDomain: String,
     onFakeTlsDomainChange: (String) -> Unit,
-    cfEnabled: Boolean,
-    onCfEnabledChange: (Boolean) -> Unit,
-    cfDomain: String,
-    onCfDomainChange: (String) -> Unit,
     enabled: Boolean,
 ) {
     Card(
@@ -391,19 +373,6 @@ private fun SettingsCard(
                 singleLine = true,
                 label = { Text("Fake TLS domain") },
                 placeholder = { Text("empty = dd secret") },
-            )
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column { Text("Cloudflare fallback"); Text("Use bundled/user CF domains", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                Switch(checked = cfEnabled, onCheckedChange = onCfEnabledChange, enabled = enabled)
-            }
-            OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
-                value = cfDomain,
-                onValueChange = onCfDomainChange,
-                enabled = enabled && cfEnabled,
-                singleLine = true,
-                label = { Text("Custom CF domain") },
-                placeholder = { Text("empty = auto pool") },
             )
         }
     }
@@ -425,16 +394,16 @@ private fun getPingColor(ping: Long): Color = when {
     else -> MaterialTheme.colorScheme.error
 }
 
-private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfEnabled: Boolean, cfDomain: String) {
+private fun Context.startProxyService(secret: String, fakeTlsDomain: String) {
     saveProxyPref(ProxyService.EXTRA_SECRET, secret)
     saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
-    saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
-    saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cfDomain)
+    saveProxyPref(ProxyService.EXTRA_CF_ENABLED, false)
+    saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, "")
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
         .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
-        .putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
-        .putExtra(ProxyService.EXTRA_CF_DOMAIN, cfDomain)
+        .putExtra(ProxyService.EXTRA_CF_ENABLED, false)
+        .putExtra(ProxyService.EXTRA_CF_DOMAIN, "")
     ContextCompat.startForegroundService(this, intent)
 }
 
