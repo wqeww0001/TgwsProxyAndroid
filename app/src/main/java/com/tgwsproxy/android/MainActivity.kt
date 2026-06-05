@@ -95,6 +95,7 @@ fun ProxyScreen() {
     var logLines by remember { mutableStateOf(emptyList<String>()) }
     val secret = rememberSaveable { context.getOrCreateProxySecret() }
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
+    var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, "")) }
     var updateMessage by remember { mutableStateOf("Current version: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -161,6 +162,11 @@ fun ProxyScreen() {
                         fakeTlsDomain = it.trim()
                         context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
                     },
+                    cfWorkerDomain = cfWorkerDomain,
+                    onCfWorkerDomainChange = {
+                        cfWorkerDomain = it.trim()
+                        context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+                    },
                     enabled = !proxyStatus.isRunning,
                 )
                 UpdateCard(
@@ -194,7 +200,7 @@ fun ProxyScreen() {
                     running = proxyStatus.isRunning,
                     locked = requiredUpdate != null,
                     onStart = {
-                        context.startProxyService(secret, fakeTlsDomain)
+                        context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain)
                         proxyStatus = ProxyStatus(true)
                     },
                     onStop = {
@@ -356,6 +362,8 @@ private fun ConnectionCard(secret: String, link: String, status: ProxyStatus) {
 private fun SettingsCard(
     fakeTlsDomain: String,
     onFakeTlsDomainChange: (String) -> Unit,
+    cfWorkerDomain: String,
+    onCfWorkerDomainChange: (String) -> Unit,
     enabled: Boolean,
 ) {
     Card(
@@ -373,6 +381,15 @@ private fun SettingsCard(
                 singleLine = true,
                 label = { Text("Fake TLS domain") },
                 placeholder = { Text("empty = dd secret") },
+            )
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = cfWorkerDomain,
+                onValueChange = onCfWorkerDomainChange,
+                enabled = enabled,
+                singleLine = true,
+                label = { Text("Cloudflare Worker domain") },
+                placeholder = { Text("empty = direct fallback") },
             )
         }
     }
@@ -394,14 +411,16 @@ private fun getPingColor(ping: Long): Color = when {
     else -> MaterialTheme.colorScheme.error
 }
 
-private fun Context.startProxyService(secret: String, fakeTlsDomain: String) {
+private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfWorkerDomain: String) {
     saveProxyPref(ProxyService.EXTRA_SECRET, secret)
     saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+    saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, false)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, "")
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
         .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+        .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, false)
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, "")
     ContextCompat.startForegroundService(this, intent)

@@ -11,5 +11,6 @@ data class ProxyRuntimeConfig(
     val fallbackCfProxy: Boolean = false,
     val fallbackCfProxyPriority: Boolean = false,
     val cfProxyUserDomain: String = "",
+    val cfProxyWorkerDomain: String = "",
     val fakeTlsDomain: String = "",
 )

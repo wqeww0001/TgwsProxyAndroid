@@ -163,7 +163,7 @@ class RawWebSocket private constructor(
         private const val OP_PONG = 0xa
         private const val READ_TIMEOUT_MS = 30_000
 
-        fun connect(host: String, domain: String, timeoutMs: Int = 10_000): RawWebSocket {
+        fun connect(host: String, domain: String, timeoutMs: Int = 10_000, path: String = "/apiws"): RawWebSocket {
             val tcpSocket = Socket()
             tcpSocket.tcpNoDelay = true
             tcpSocket.connect(InetSocketAddress(host, 443), timeoutMs)
@@ -178,15 +178,15 @@ class RawWebSocket private constructor(
             sslSocket.soTimeout = READ_TIMEOUT_MS
 
             val ws = RawWebSocket(sslSocket)
-            ws.handshake(domain)
+            ws.handshake(domain, path)
             return ws
         }
     }
 
-    private fun handshake(domain: String) {
+    private fun handshake(domain: String, path: String) {
         val wsKey = Base64.getEncoder().encodeToString(ByteArray(16).also(random::nextBytes))
         val request = buildString {
-            append("GET /apiws HTTP/1.1\r\n")
+            append("GET $path HTTP/1.1\r\n")
             append("Host: $domain\r\n")
             append("Upgrade: websocket\r\n")
             append("Connection: Upgrade\r\n")

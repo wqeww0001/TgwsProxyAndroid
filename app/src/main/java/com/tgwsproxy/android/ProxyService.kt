@@ -46,12 +46,15 @@ class ProxyService : Service() {
 
         val fakeTlsDomain = intent?.getStringExtra(EXTRA_FAKE_TLS_DOMAIN)
             ?: prefs.getString(EXTRA_FAKE_TLS_DOMAIN, "").orEmpty()
+        val cfWorkerDomain = intent?.getStringExtra(EXTRA_CF_WORKER_DOMAIN)
+            ?: prefs.getString(EXTRA_CF_WORKER_DOMAIN, "").orEmpty()
         val cfDomain = ""
         val cfEnabled = false
 
         prefs.edit()
             .putString(EXTRA_SECRET, secret)
             .putString(EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+            .putString(EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
             .putString(EXTRA_CF_DOMAIN, cfDomain)
             .putBoolean(EXTRA_CF_ENABLED, cfEnabled)
             .apply()
@@ -69,6 +72,7 @@ class ProxyService : Service() {
                     secretHex = secret,
                     fallbackCfProxy = false,
                     cfProxyUserDomain = "",
+                    cfProxyWorkerDomain = cfWorkerDomain.trim(),
                     fakeTlsDomain = fakeTlsDomain.trim(),
                 )
             ).also { it.start() }
@@ -156,6 +160,7 @@ class ProxyService : Service() {
     companion object {
         const val EXTRA_SECRET = "secret"
         const val EXTRA_FAKE_TLS_DOMAIN = "fake_tls_domain"
+        const val EXTRA_CF_WORKER_DOMAIN = "cf_worker_domain"
         const val EXTRA_CF_DOMAIN = "cf_domain"
         const val EXTRA_CF_ENABLED = "cf_enabled"
         private const val PREFS = "proxy"

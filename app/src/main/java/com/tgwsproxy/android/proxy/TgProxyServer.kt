@@ -8,6 +8,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.CopyOnWriteArrayList
@@ -148,6 +150,10 @@ class TgProxyServer(
     private fun connectWebSocket(dcId: Int, isMedia: Boolean): WsRoute? {
         val dcKey = dcKey(dcId, isMedia)
         val routeDcId = routeDcId(dcId)
+        if (!config.dcRedirects.containsKey(routeDcId)) {
+            ProxyLogger.i("DC$dcId not in WS redirects -> fallback")
+            return null
+        }
         val domains = wsDomains(dcId, isMedia)
         wsPool.take(dcId, isMedia)?.let {
             ProxyStats.poolHits.incrementAndGet()
@@ -191,7 +197,9 @@ class TgProxyServer(
         relayInit: ByteArray,
         ctx: CryptoContext,
     ) {
-        val methods = if (config.fallbackCfProxy && config.fallbackCfProxyPriority) {
+        val methods = if (config.cfProxyWorkerDomain.isNotBlank()) {
+            listOf("cf_worker", "tcp")
+        } else if (config.fallbackCfProxy && config.fallbackCfProxyPriority) {
             listOf("cf", "tcp")
         } else if (config.fallbackCfProxy) {
             listOf("tcp", "cf")
@@ -200,12 +208,37 @@ class TgProxyServer(
         }
         for (method in methods) {
             val ok = when (method) {
+                "cf_worker" -> bridgeCfWorkerFallback(client, dcId, isMedia, relayInit, ctx)
                 "cf" -> bridgeCfFallback(client, dcId, isMedia, relayInit, ctx)
                 else -> bridgeTcpFallback(client, dcId, relayInit, ctx)
             }
             if (ok) return
         }
         ProxyLogger.w("No fallback available for DC$dcId")
+    }
+
+    private fun bridgeCfWorkerFallback(
+        client: ClientIo,
+        dcId: Int,
+        isMedia: Boolean,
+        relayInit: ByteArray,
+        ctx: CryptoContext,
+    ): Boolean {
+        val workerDomain = config.cfProxyWorkerDomain.trim()
+        if (workerDomain.isBlank()) return false
+        val fallbackIp = tcpFallbackIps(dcId).firstOrNull() ?: return false
+        val path = "/apiws?dst=${URLEncoder.encode(fallbackIp, StandardCharsets.UTF_8.name())}&dc=$dcId&media=${if (isMedia) "1" else "0"}"
+        val ws = runCatching {
+            RawWebSocket.connect(workerDomain, workerDomain, TCP_CONNECT_TIMEOUT_MS, path)
+        }.onFailure {
+            ProxyLogger.w("CF worker failed DC$dcId via $workerDomain to $fallbackIp", it)
+        }.getOrNull() ?: return false
+
+        ProxyStats.connectionsCfProxy.incrementAndGet()
+        ProxyLogger.i("CF worker connected DC$dcId via $workerDomain to $fallbackIp")
+        ws.send(relayInit)
+        bridgeWebSocket(client, ws, ctx, MtprotoPacketSplitter(relayInit, ProtoTransport.PaddedIntermediate), "CF worker DC$dcId $workerDomain")
+        return true
     }
 
     private fun bridgeCfFallback(
