@@ -147,6 +147,7 @@ class TgProxyServer(
 
     private fun connectWebSocket(dcId: Int, isMedia: Boolean): WsRoute? {
         val dcKey = dcKey(dcId, isMedia)
+        val routeDcId = routeDcId(dcId)
         val domains = wsDomains(dcId, isMedia)
         wsPool.take(dcId, isMedia)?.let {
             ProxyStats.poolHits.incrementAndGet()
@@ -165,7 +166,7 @@ class TgProxyServer(
                 continue
             }
             val ws = runCatching {
-                RawWebSocket.connect(config.dcRedirects[dcId] ?: domain, domain, timeout)
+                RawWebSocket.connect(config.dcRedirects[routeDcId] ?: domain, domain, timeout)
             }.onFailure { ex ->
                 ProxyStats.wsErrors.incrementAndGet()
                 allRedirects = false
@@ -233,7 +234,7 @@ class TgProxyServer(
     }
 
     private fun bridgeTcpFallback(client: ClientIo, dcId: Int, relayInit: ByteArray, ctx: CryptoContext): Boolean {
-        val fallbackIps = defaultDcIps[dcId].orEmpty()
+        val fallbackIps = tcpFallbackIps(dcId)
         for (fallbackIp in fallbackIps) {
             val connected = runCatching {
                 Socket().use { telegram ->
@@ -367,6 +368,13 @@ class TgProxyServer(
         val dc = if (dcId == 203) 2 else dcId
         return if (isMedia) listOf("kws$dc-1.web.telegram.org", "kws$dc.web.telegram.org")
         else listOf("kws$dc.web.telegram.org", "kws$dc-1.web.telegram.org")
+    }
+
+    private fun routeDcId(dcId: Int): Int = if (dcId == 203) 2 else dcId
+
+    private fun tcpFallbackIps(dcId: Int): List<String> {
+        val direct = defaultDcIps[dcId].orEmpty()
+        return if (dcId == 203) direct + defaultDcIps[2].orEmpty() else direct
     }
 
     private fun dcKey(dcId: Int, isMedia: Boolean): String = "$dcId${if (isMedia) "m" else ""}"
