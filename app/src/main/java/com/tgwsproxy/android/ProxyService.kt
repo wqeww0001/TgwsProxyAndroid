@@ -46,8 +46,10 @@ class ProxyService : Service() {
 
         val fakeTlsDomain = intent?.getStringExtra(EXTRA_FAKE_TLS_DOMAIN)
             ?: prefs.getString(EXTRA_FAKE_TLS_DOMAIN, "").orEmpty()
-        val cfWorkerDomain = intent?.getStringExtra(EXTRA_CF_WORKER_DOMAIN)
-            ?: prefs.getString(EXTRA_CF_WORKER_DOMAIN, "").orEmpty()
+        val cfWorkerDomain = ProxyConfig.cleanDomain(
+            intent?.getStringExtra(EXTRA_CF_WORKER_DOMAIN)
+                ?: prefs.getString(EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN).orEmpty(),
+        ).ifBlank { ProxyConfig.DEFAULT_CF_WORKER_DOMAIN }
         val cfDomain = ""
         val cfEnabled = false
 

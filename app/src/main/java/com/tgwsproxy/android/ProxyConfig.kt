@@ -5,6 +5,7 @@ import java.security.SecureRandom
 object ProxyConfig {
     const val HOST = "127.0.0.1"
     const val PORT = 1443
+    const val DEFAULT_CF_WORKER_DOMAIN = "cool-mountain-f1d1.wqeww001.workers.dev"
 
     fun generateSecret(): String {
         val bytes = ByteArray(16)
@@ -20,5 +21,12 @@ object ProxyConfig {
             "ee$secret${cleanDomain.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }}"
         }
         return "tg://proxy?server=$HOST&port=$PORT&secret=$proxySecret"
+    }
+
+    fun cleanDomain(value: String): String {
+        return value.trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .trim('/')
     }
 }

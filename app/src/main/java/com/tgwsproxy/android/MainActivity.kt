@@ -95,7 +95,7 @@ fun ProxyScreen() {
     var logLines by remember { mutableStateOf(emptyList<String>()) }
     val secret = rememberSaveable { context.getOrCreateProxySecret() }
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
-    var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, "")) }
+    var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN).ifBlank { ProxyConfig.DEFAULT_CF_WORKER_DOMAIN }) }
     var updateMessage by remember { mutableStateOf("Current version: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -164,7 +164,7 @@ fun ProxyScreen() {
                     },
                     cfWorkerDomain = cfWorkerDomain,
                     onCfWorkerDomainChange = {
-                        cfWorkerDomain = it.trim()
+                        cfWorkerDomain = ProxyConfig.cleanDomain(it)
                         context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
                     },
                     enabled = !proxyStatus.isRunning,
@@ -412,15 +412,16 @@ private fun getPingColor(ping: Long): Color = when {
 }
 
 private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfWorkerDomain: String) {
+    val cleanWorkerDomain = ProxyConfig.cleanDomain(cfWorkerDomain).ifBlank { ProxyConfig.DEFAULT_CF_WORKER_DOMAIN }
     saveProxyPref(ProxyService.EXTRA_SECRET, secret)
     saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
-    saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+    saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, false)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, "")
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
         .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
-        .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+        .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, false)
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, "")
     ContextCompat.startForegroundService(this, intent)
