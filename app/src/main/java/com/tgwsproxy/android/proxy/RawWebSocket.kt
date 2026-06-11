@@ -161,7 +161,7 @@ class RawWebSocket private constructor(
         private const val OP_CLOSE = 0x8
         private const val OP_PING = 0x9
         private const val OP_PONG = 0xa
-        private const val READ_TIMEOUT_MS = 30_000
+        private const val READ_TIMEOUT_MS = 300_000
 
         fun connect(host: String, domain: String, timeoutMs: Int = 10_000, path: String = "/apiws"): RawWebSocket {
             val tcpSocket = Socket()

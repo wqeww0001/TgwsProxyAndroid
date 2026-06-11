@@ -92,6 +92,11 @@ class TgProxyServer(
             val dcKey = dcKey(parsed.dcId, parsed.isMedia)
             ProxyLogger.i("Client connected: DC${parsed.dcId}${if (parsed.isMedia) " media" else ""}, ${parsed.protoTag}")
 
+            if (config.cfProxyWorkerDomain.isNotBlank()) {
+                bridgeFallback(init.io, parsed.dcId, parsed.isMedia, relayInit, ctx)
+                return
+            }
+
             if (config.directTcpFirst || wsBlacklist.contains(dcKey)) {
                 bridgeFallback(init.io, parsed.dcId, parsed.isMedia, relayInit, ctx)
                 return
@@ -153,6 +158,10 @@ class TgProxyServer(
     }
 
     private fun connectWebSocket(dcId: Int, isMedia: Boolean): WsRoute? {
+        if (config.cfProxyWorkerDomain.isNotBlank()) {
+            ProxyLogger.i("Worker relay enabled -> skip direct WS for DC$dcId${if (isMedia) " media" else ""}")
+            return null
+        }
         val dcKey = dcKey(dcId, isMedia)
         val routeDcId = routeDcId(dcId)
         if (!config.dcRedirects.containsKey(routeDcId)) {
@@ -395,6 +404,7 @@ class TgProxyServer(
 
     private fun warmupPool() {
         if (config.poolSize <= 0) return
+        if (config.cfProxyWorkerDomain.isNotBlank()) return
         for ((dc, target) in config.dcRedirects) {
             for (media in listOf(false, true)) {
                 wsPool.refill(dc, media) { RawWebSocket.connect(target, wsDomains(dc, media).first()) }
