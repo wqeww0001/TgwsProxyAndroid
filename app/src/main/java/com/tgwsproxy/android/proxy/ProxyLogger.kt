@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentLinkedDeque
 
 object ProxyLogger {
     private const val TAG = "TgWsProxy"
-    private const val MAX_LINES = 300
+    private const val MAX_LINES = 1200
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private val lines = ConcurrentLinkedDeque<String>()
 
@@ -18,6 +18,10 @@ object ProxyLogger {
     fun e(message: String, throwable: Throwable? = null) = log(Log.ERROR, "E", message, throwable)
 
     fun snapshot(): List<String> = lines.toList()
+
+    fun exportText(): String {
+        return snapshot().joinToString(separator = "\n", postfix = "\n")
+    }
 
     private fun log(priority: Int, level: String, message: String, throwable: Throwable?) {
         val line = "${timeFormat.format(Date())} $level $message${throwable?.message?.let { ": $it" } ?: ""}"

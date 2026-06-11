@@ -30,10 +30,12 @@ object ProxyServiceStatus {
     }
 
     private fun formatUptime(millis: Long): String {
+        val days = millis / (1000 * 60 * 60 * 24)
         val seconds = (millis / 1000) % 60
         val minutes = (millis / (1000 * 60)) % 60
         val hours = (millis / (1000 * 60 * 60)) % 24
         return when {
+            days > 0 -> String.format("%dd %02d:%02d:%02d", days, hours, minutes, seconds)
             hours > 0 -> String.format("%02d:%02d:%02d", hours, minutes, seconds)
             minutes > 0 -> String.format("%02d:%02d", minutes, seconds)
             else -> String.format("%02d sec", seconds)
