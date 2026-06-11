@@ -26,14 +26,22 @@ object UpdateChecker {
         val cleanRepo = repo.trim().removePrefix("https://github.com/").trim('/')
         if (!cleanRepo.contains('/')) error("GitHub repo must look like owner/name")
 
-        val url = URL("https://api.github.com/repos/$cleanRepo/releases/latest")
-        val json = (url.openConnection() as HttpURLConnection).run {
-            connectTimeout = 10_000
-            readTimeout = 10_000
-            setRequestProperty("Accept", "application/vnd.github+json")
-            setRequestProperty("User-Agent", "TgwsProxyAndroid")
-            inputStream.bufferedReader().use { it.readText() }
+        return runCatching {
+            checkLatestViaApi(cleanRepo, currentVersion)
+        }.getOrElse { apiError ->
+            runCatching {
+                checkLatestViaReleaseRedirect(cleanRepo, currentVersion)
+            }.getOrElse {
+                throw IllegalStateException(apiError.message ?: apiError.javaClass.simpleName)
+            }
         }
+    }
+
+    private fun checkLatestViaApi(repo: String, currentVersion: String): UpdateInfo? {
+        val json = httpGet(
+            url = "https://api.github.com/repos/$repo/releases/latest",
+            accept = "application/vnd.github+json",
+        )
         val root = JSONObject(json)
         val latestVersion = root.optString("tag_name").trim().removePrefix("v")
         val assets = root.getJSONArray("assets")
@@ -48,15 +56,42 @@ object UpdateChecker {
         error("Latest GitHub release has no APK asset")
     }
 
+    private fun checkLatestViaReleaseRedirect(repo: String, currentVersion: String): UpdateInfo? {
+        val url = URL("https://github.com/$repo/releases/latest")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = false
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            setRequestProperty("User-Agent", "TgwsProxyAndroid")
+        }
+        val code = connection.responseCode
+        val location = connection.getHeaderField("Location").orEmpty()
+        connection.disconnect()
+        if (code !in 300..399 || location.isBlank()) error("GitHub latest redirect failed: HTTP $code")
+
+        val latestVersion = location.substringAfterLast('/').removePrefix("v").trim()
+        if (latestVersion.isBlank()) error("GitHub latest tag not found")
+        val apkUrl = "https://github.com/$repo/releases/download/v$latestVersion/TgwsProxyAndroid-v$latestVersion-release.apk"
+        return if (isNewer(latestVersion, currentVersion)) UpdateInfo(latestVersion, apkUrl) else null
+    }
+
     fun downloadApk(context: Context, info: UpdateInfo): File {
         val file = File(context.cacheDir, "tgwsproxyandroid-${info.version}.apk")
         (URL(info.apkUrl).openConnection() as HttpURLConnection).run {
+            instanceFollowRedirects = true
             connectTimeout = 15_000
             readTimeout = 60_000
             setRequestProperty("User-Agent", "TgwsProxyAndroid")
+            val code = responseCode
+            if (code !in 200..299) {
+                val body = errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                disconnect()
+                error("APK download failed: HTTP $code ${body.take(120)}")
+            }
             inputStream.use { input ->
                 file.outputStream().use { output -> input.copyTo(output) }
             }
+            disconnect()
         }
         return file
     }
@@ -80,5 +115,20 @@ object UpdateChecker {
             if (left != right) return left > right
         }
         return latest != current
+    }
+
+    private fun httpGet(url: String, accept: String): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            setRequestProperty("Accept", accept)
+            setRequestProperty("User-Agent", "TgwsProxyAndroid")
+        }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        connection.disconnect()
+        if (code !in 200..299) error("GitHub API failed: HTTP $code ${body.take(120)}")
+        return body
     }
 }
