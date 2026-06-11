@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Handler
@@ -29,6 +30,9 @@ class ProxyService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var updateRunnable: Runnable? = null
     private var serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val largeIcon: Bitmap by lazy {
+        BitmapFactory.decodeResource(resources, R.drawable.proxy_app_icon)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -115,17 +119,22 @@ class ProxyService : Service() {
         updateRunnable = object : Runnable {
             override fun run() {
                 if (proxyServer != null) updateNotification()
-                handler.postDelayed(this, 1000)
+                handler.postDelayed(this, 30_000)
             }
         }
         handler.post(updateRunnable!!)
     }
 
     private fun formatUptime(millis: Long): String {
+        val days = millis / (1000 * 60 * 60 * 24)
         val seconds = (millis / 1000) % 60
         val minutes = (millis / (1000 * 60)) % 60
         val hours = (millis / (1000 * 60 * 60)) % 24
-        return if (hours > 0) "%02d:%02d:%02d".format(hours, minutes, seconds) else "%02d:%02d".format(minutes, seconds)
+        return when {
+            days > 0 -> "%dd %02d:%02d:%02d".format(days, hours, minutes, seconds)
+            hours > 0 -> "%02d:%02d:%02d".format(hours, minutes, seconds)
+            else -> "%02d:%02d".format(minutes, seconds)
+        }
     }
 
     private fun updateNotification() {
@@ -144,7 +153,7 @@ class ProxyService : Service() {
         val localPort = if (lastPing >= 0) "service online" else "service N/A"
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setLargeIcon(BitmapFactory.decodeResource(resources, R.drawable.proxy_app_icon))
+            .setLargeIcon(largeIcon)
             .setContentTitle("TG WS Proxy active")
             .setContentText("${ProxyConfig.HOST}:${ProxyConfig.PORT} | $uptime | $localPort")
             .setContentIntent(pendingIntent)

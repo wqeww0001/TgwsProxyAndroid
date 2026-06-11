@@ -49,6 +49,11 @@ class TgProxyServer(
                         val client = server.accept()
                         client.tcpNoDelay = true
                         client.soTimeout = CLIENT_READ_TIMEOUT_MS
+                        if (clients.size >= MAX_ACTIVE_CLIENTS) {
+                            ProxyLogger.w("Too many active clients (${clients.size}), dropping new connection")
+                            runCatching { client.close() }
+                            continue
+                        }
                         clients.add(client)
                         Thread({ handleClient(client) }, "tgws-client").start()
                     }
@@ -420,6 +425,7 @@ class TgProxyServer(
         private const val WS_FAIL_TIMEOUT_MS = 2_000
         private const val CLIENT_READ_TIMEOUT_MS = 120_000
         private const val TCP_CONNECT_TIMEOUT_MS = 4_000
+        private const val MAX_ACTIVE_CLIENTS = 64
         private val defaultDcIps = mapOf(
             1 to listOf("149.154.175.50", "149.154.175.53"),
             2 to listOf("149.154.167.51", "149.154.167.50", "149.154.167.91"),

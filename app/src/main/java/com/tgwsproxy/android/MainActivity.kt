@@ -1,6 +1,9 @@
 ﻿package com.tgwsproxy.android
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -66,6 +69,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.ui.theme.TgwsProxyAndroidTheme
@@ -301,6 +305,7 @@ fun ProxyScreen() {
                         context.stopService(Intent(context, ProxyService::class.java))
                         proxyStatus = ProxyStatus(false)
                         updateMessage = "${text.requiredUpdate} ${update.version}. ${text.installToContinue}"
+                        context.notifyRequiredUpdate(update, text)
                     }
                 }.onFailure {
                     updateMessage = "${text.updateCheckFailed}: ${UpdateChecker.currentVersion(context)}"
@@ -364,6 +369,7 @@ fun ProxyScreen() {
                                 if (update == null) {
                                     "${text.noUpdateFound}: $current"
                                 } else {
+                                    context.notifyRequiredUpdate(update, text)
                                     withContext(Dispatchers.Main) { updateMessage = "${text.downloading} ${update.version}..." }
                                     val apk = UpdateChecker.downloadApk(context, update)
                                     withContext(Dispatchers.Main) { UpdateChecker.installApk(context, apk) }
@@ -700,6 +706,42 @@ private fun Context.saveLogsToDownloads(): Boolean {
     }.getOrDefault(false)
 }
 
+private fun Context.notifyRequiredUpdate(update: UpdateInfo, text: UiStrings) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (!granted) return
+    }
+
+    val notificationManager = getSystemService(NotificationManager::class.java)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val channel = NotificationChannel(
+            UPDATE_CHANNEL_ID,
+            "Updates",
+            NotificationManager.IMPORTANCE_HIGH,
+        )
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    val pendingIntent = PendingIntent.getActivity(
+        this,
+        20,
+        Intent(this, MainActivity::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    val notification = NotificationCompat.Builder(this, UPDATE_CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setContentTitle("${text.requiredUpdate} ${update.version}")
+        .setContentText(text.installToContinue)
+        .setContentIntent(pendingIntent)
+        .setAutoCancel(true)
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .build()
+
+    notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
+}
+
+private const val UPDATE_CHANNEL_ID = "updates"
+private const val UPDATE_NOTIFICATION_ID = 2001
 private const val LANGUAGE_PREF = "ui_language"
 private const val PROXY_PREFS = "proxy"
 
