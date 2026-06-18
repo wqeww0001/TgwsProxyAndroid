@@ -38,17 +38,26 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DrawerValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Article
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -89,7 +98,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         requestNotificationPermission()
         requestStoragePermission()
-        setContent { TgwsProxyAndroidTheme { ProxyScreen() } }
+        setContent { TgwsProxyAndroidTheme(darkTheme = true) { ProxyScreen() } }
     }
 
     private fun requestNotificationPermission() {
@@ -115,6 +124,23 @@ private enum class AppLanguage(val code: String) {
     Ru("ru"),
     En("en"),
 }
+
+private enum class AppTab {
+    Home,
+    Logs,
+    Settings,
+    Help,
+}
+
+private data class LatestStats(
+    val active: String = "0",
+    val cf: String = "0",
+    val ws: String = "0",
+    val tcp: String = "0",
+    val errors: String = "0",
+    val up: String = "0B",
+    val down: String = "0B",
+)
 
 private data class UiStrings(
     val menu: String,
@@ -252,8 +278,8 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
 @Composable
 fun ProxyScreen() {
     val context = LocalContext.current
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    var selectedTab by rememberSaveable { mutableStateOf(AppTab.Home) }
     var language by rememberSaveable {
         mutableStateOf(
             if (context.getProxyPref(LANGUAGE_PREF, AppLanguage.Ru.code) == AppLanguage.En.code) AppLanguage.En else AppLanguage.Ru,
@@ -280,7 +306,7 @@ fun ProxyScreen() {
                 } else {
                     ProxyStatus(false)
                 }
-                val logs = ProxyLogger.snapshot().takeLast(12)
+                val logs = ProxyLogger.snapshot().takeLast(120)
                 withContext(Dispatchers.Main) {
                     proxyStatus = next
                     logLines = logs
@@ -315,139 +341,371 @@ fun ProxyScreen() {
         onDispose { job.cancel() }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            AppDrawer(
-                text = text,
-                language = language,
-                onLanguageChange = {
-                    language = it
-                    context.saveProxyPref(LANGUAGE_PREF, it.code)
-                    scope.launch { drawerState.close() }
-                },
-            )
-        },
-    ) {
-        Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-            Surface(
-                modifier = Modifier.fillMaxSize().padding(innerPadding),
-                color = MaterialTheme.colorScheme.background,
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                Header(proxyStatus, text) { scope.launch { drawerState.open() } }
-                ConnectionCard(text, secret, link, proxyStatus)
-                SettingsCard(
-                    text = text,
-                    fakeTlsDomain = fakeTlsDomain,
-                    onFakeTlsDomainChange = {
-                        fakeTlsDomain = it.trim()
-                        context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
-                    },
-                    cfWorkerDomain = cfWorkerDomain,
-                    onCfWorkerDomainChange = {
-                        cfWorkerDomain = ProxyConfig.cleanDomain(it)
-                        context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
-                    },
-                    enabled = !proxyStatus.isRunning,
-                )
-                UpdateCard(
-                    text = text,
-                    message = updateMessage,
-                    busy = updateBusy,
-                    required = requiredUpdate != null,
-                    onCheck = {
-                        updateBusy = true
-                        updateMessage = if (requiredUpdate != null) text.downloadingRequiredUpdate else text.checkingGithub
-                        CoroutineScope(Dispatchers.IO).launch {
-                            val result = runCatching {
-                                val current = UpdateChecker.currentVersion(context)
-                                val update = requiredUpdate ?: UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
-                                if (update == null) {
-                                    "${text.noUpdateFound}: $current"
-                                } else {
-                                    context.notifyRequiredUpdate(update, text)
-                                    withContext(Dispatchers.Main) { updateMessage = "${text.downloading} ${update.version}..." }
-                                    val apk = UpdateChecker.downloadApk(context, update)
-                                    withContext(Dispatchers.Main) { UpdateChecker.installApk(context, apk) }
-                                    "${text.installerOpened} ${update.version}"
-                                }
-                            }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
-                            withContext(Dispatchers.Main) {
-                                updateMessage = result
-                                updateBusy = false
-                            }
-                        }
-                    },
-                )
-                ControlButtons(
-                    text = text,
-                    running = proxyStatus.isRunning,
-                    locked = requiredUpdate != null,
-                    onStart = {
-                        context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain)
-                        proxyStatus = ProxyStatus(true)
-                    },
-                    onStop = {
-                        context.stopService(Intent(context, ProxyService::class.java))
-                        proxyStatus = ProxyStatus(false)
-                    },
-                )
-                LogsCard(text, logLines)
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        val result = context.saveLogsToDownloads()
-                        Toast.makeText(context, if (result) text.logsSaved else text.logsSaveFailed, Toast.LENGTH_SHORT).show()
-                    },
-                ) { Text(text.downloadLogs) }
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        context.copyToClipboard(link)
-                        Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
-                    },
-                ) { Text(text.copyTelegramLink) }
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) },
-                ) { Text(text.openInTelegram) }
-                Text(
-                    text = link,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+    fun runUpdateCheck() {
+        updateBusy = true
+        updateMessage = if (requiredUpdate != null) text.downloadingRequiredUpdate else text.checkingGithub
+        CoroutineScope(Dispatchers.IO).launch {
+            val result = runCatching {
+                val current = UpdateChecker.currentVersion(context)
+                val update = requiredUpdate ?: UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
+                if (update == null) {
+                    "${text.noUpdateFound}: $current"
+                } else {
+                    context.notifyRequiredUpdate(update, text)
+                    withContext(Dispatchers.Main) { updateMessage = "${text.downloading} ${update.version}..." }
+                    val apk = UpdateChecker.downloadApk(context, update)
+                    withContext(Dispatchers.Main) { UpdateChecker.installApk(context, apk) }
+                    "${text.installerOpened} ${update.version}"
+                }
+            }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
+            withContext(Dispatchers.Main) {
+                updateMessage = result
+                updateBusy = false
             }
         }
     }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        bottomBar = {
+            BottomTabs(
+                selectedTab = selectedTab,
+                language = language,
+                onSelect = { selectedTab = it },
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { innerPadding ->
+        Surface(
+            modifier = Modifier.fillMaxSize().padding(innerPadding),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                when (selectedTab) {
+                    AppTab.Home -> HomePage(
+                        text = text,
+                        status = proxyStatus,
+                        secret = secret,
+                        link = link,
+                        logs = logLines,
+                        requiredUpdate = requiredUpdate != null,
+                        onStart = {
+                            context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain)
+                            proxyStatus = ProxyStatus(true)
+                        },
+                        onStop = {
+                            context.stopService(Intent(context, ProxyService::class.java))
+                            proxyStatus = ProxyStatus(false)
+                        },
+                        onCopyLink = {
+                            context.copyToClipboard(link)
+                            Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
+                        },
+                        onOpenTelegram = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) },
+                    )
+                    AppTab.Logs -> LogsPage(
+                        text = text,
+                        logs = logLines,
+                        onDownload = {
+                            val result = context.saveLogsToDownloads()
+                            Toast.makeText(context, if (result) text.logsSaved else text.logsSaveFailed, Toast.LENGTH_SHORT).show()
+                        },
+                    )
+                    AppTab.Settings -> SettingsPage(
+                        text = text,
+                        language = language,
+                        onLanguageChange = {
+                            language = it
+                            context.saveProxyPref(LANGUAGE_PREF, it.code)
+                        },
+                        fakeTlsDomain = fakeTlsDomain,
+                        onFakeTlsDomainChange = {
+                            fakeTlsDomain = it.trim()
+                            context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+                        },
+                        cfWorkerDomain = cfWorkerDomain,
+                        onCfWorkerDomainChange = {
+                            cfWorkerDomain = ProxyConfig.cleanDomain(it)
+                            context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+                        },
+                        enabled = !proxyStatus.isRunning,
+                        updateMessage = updateMessage,
+                        updateBusy = updateBusy,
+                        requiredUpdate = requiredUpdate != null,
+                        onCheckUpdate = ::runUpdateCheck,
+                    )
+                    AppTab.Help -> HelpPage(language)
+                }
+            }
+        }
+    }
+}
+@Composable
+private fun BottomTabs(
+    selectedTab: AppTab,
+    language: AppLanguage,
+    onSelect: (AppTab) -> Unit,
+) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+        AppTab.entries.forEach { tab ->
+            NavigationBarItem(
+                selected = selectedTab == tab,
+                onClick = { onSelect(tab) },
+                icon = {
+                    Icon(
+                        imageVector = when (tab) {
+                            AppTab.Home -> Icons.Rounded.Home
+                            AppTab.Logs -> Icons.Rounded.Article
+                            AppTab.Settings -> Icons.Rounded.Settings
+                            AppTab.Help -> Icons.Rounded.HelpOutline
+                        },
+                        contentDescription = tabTitle(tab, language),
+                    )
+                },
+                label = { Text(tabTitle(tab, language)) },
+            )
+        }
+    }
+}
+
+private fun tabTitle(tab: AppTab, language: AppLanguage): String {
+    return when (language) {
+        AppLanguage.Ru -> when (tab) {
+            AppTab.Home -> "Главная"
+            AppTab.Logs -> "Логи"
+            AppTab.Settings -> "Настройки"
+            AppTab.Help -> "Помощь"
+        }
+        AppLanguage.En -> when (tab) {
+            AppTab.Home -> "Home"
+            AppTab.Logs -> "Logs"
+            AppTab.Settings -> "Settings"
+            AppTab.Help -> "Help"
+        }
     }
 }
 
 @Composable
-private fun AppDrawer(
+private fun HomePage(
+    text: UiStrings,
+    status: ProxyStatus,
+    secret: String,
+    link: String,
+    logs: List<String>,
+    requiredUpdate: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onCopyLink: () -> Unit,
+    onOpenTelegram: () -> Unit,
+) {
+    val stats = remember(logs) { latestStats(logs) }
+    Header(status, text)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        StatTile("CF", stats.cf, Modifier.weight(1f))
+        StatTile("Active", stats.active, Modifier.weight(1f))
+        StatTile("Errors", stats.errors, Modifier.weight(1f), color = getErrorColor(stats.errors))
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        StatTile("Up", stats.up, Modifier.weight(1f), compact = true)
+        StatTile("Down", stats.down, Modifier.weight(1f), compact = true)
+    }
+    ControlPanel(text, status.isRunning, requiredUpdate, onStart, onStop)
+    ConnectionCard(text, secret, link, status)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        FilledTonalButton(modifier = Modifier.weight(1f), onClick = onCopyLink) {
+            Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            Text(text.copyTelegramLink)
+        }
+        Button(modifier = Modifier.weight(1f), onClick = onOpenTelegram) {
+            Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            Text(text.openInTelegram)
+        }
+    }
+    LogsCard(text, logs.takeLast(6))
+}
+
+@Composable
+private fun LogsPage(
+    text: UiStrings,
+    logs: List<String>,
+    onDownload: () -> Unit,
+) {
+    PageTitle(text.debugLog, if (logs.isEmpty()) text.noEventsYet else "${logs.size} lines")
+    FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = onDownload) {
+        Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.size(8.dp))
+        Text(text.downloadLogs)
+    }
+    LogsCard(text, logs)
+}
+
+@Composable
+private fun SettingsPage(
     text: UiStrings,
     language: AppLanguage,
     onLanguageChange: (AppLanguage) -> Unit,
+    fakeTlsDomain: String,
+    onFakeTlsDomainChange: (String) -> Unit,
+    cfWorkerDomain: String,
+    onCfWorkerDomainChange: (String) -> Unit,
+    enabled: Boolean,
+    updateMessage: String,
+    updateBusy: Boolean,
+    requiredUpdate: Boolean,
+    onCheckUpdate: () -> Unit,
 ) {
-    ModalDrawerSheet {
+    PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(LocalContext.current))
+    LanguageCard(text, language, onLanguageChange)
+    SettingsCard(
+        text = text,
+        fakeTlsDomain = fakeTlsDomain,
+        onFakeTlsDomainChange = onFakeTlsDomainChange,
+        cfWorkerDomain = cfWorkerDomain,
+        onCfWorkerDomainChange = onCfWorkerDomainChange,
+        enabled = enabled,
+    )
+    UpdateCard(
+        text = text,
+        message = updateMessage,
+        busy = updateBusy,
+        required = requiredUpdate,
+        onCheck = onCheckUpdate,
+    )
+}
+
+@Composable
+private fun HelpPage(language: AppLanguage) {
+    val ru = language == AppLanguage.Ru
+    PageTitle(if (ru) "Помощь" else "Help", "Rust + Tokio core")
+    HelpCard(
+        title = if (ru) "Как подключаться" else "How to connect",
+        body = if (ru) {
+            "Запусти прокси, нажми открыть в Telegram и включи добавленный локальный MTProto-прокси. Адрес остаётся 127.0.0.1:1443."
+        } else {
+            "Start the proxy, open the Telegram link, then enable the local MTProto proxy. The endpoint stays 127.0.0.1:1443."
+        },
+    )
+    HelpCard(
+        title = if (ru) "Cloudflare режим" else "Cloudflare mode",
+        body = if (ru) {
+            "Пустое поле Cloudflare использует встроенный список доменов и TCP fallback. Старый workers.dev больше не нужен."
+        } else {
+            "An empty Cloudflare field uses the built-in domain list and TCP fallback. The old workers.dev relay is no longer needed."
+        },
+    )
+    HelpCard(
+        title = if (ru) "Что значат логи" else "Reading logs",
+        body = if (ru) {
+            "cf показывает подключения через Cloudflare, tcp_fb - прямой TCP fallback, err - ошибки WS. Если down растёт, Telegram получает данные."
+        } else {
+            "cf means Cloudflare routes, tcp_fb is direct TCP fallback, err is WS errors. If down grows, Telegram is receiving data."
+        },
+    )
+}
+
+@Composable
+private fun PageTitle(title: String, subtitle: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChange: (AppLanguage) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.Ru, onClick = { onLanguageChange(AppLanguage.Ru) }) {
+                Text(text.russian)
+            }
+            OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.En, onClick = { onLanguageChange(AppLanguage.En) }) {
+                Text(text.english)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HelpCard(title: String, body: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(text.language, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            NavigationDrawerItem(
-                label = { Text(text.russian) },
-                selected = language == AppLanguage.Ru,
-                onClick = { onLanguageChange(AppLanguage.Ru) },
-            )
-            NavigationDrawerItem(
-                label = { Text(text.english) },
-                selected = language == AppLanguage.En,
-                onClick = { onLanguageChange(AppLanguage.En) },
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun StatTile(label: String, value: String, modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.primary, compact: Boolean = false) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                value,
+                style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall,
+                fontFamily = FontFamily.Monospace,
+                color = color,
+                fontWeight = FontWeight.SemiBold,
             )
         }
     }
+}
+
+@Composable
+private fun ControlPanel(text: UiStrings, running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = if (running) onStop else onStart, enabled = !locked || running) {
+                Icon(Icons.Rounded.PowerSettingsNew, contentDescription = if (running) text.stop else text.start)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(if (running) text.active else text.stopped, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("${ProxyConfig.HOST}:${ProxyConfig.PORT}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!running) Button(onClick = onStart, enabled = !locked) { Text(text.start) }
+            if (running) OutlinedButton(onClick = onStop) { Text(text.stop) }
+        }
+    }
+}
+
+private fun latestStats(logs: List<String>): LatestStats {
+    val line = logs.lastOrNull { it.contains("Rust stats:") } ?: return LatestStats()
+    fun value(key: String): String = line.substringAfter("$key=", "").substringBefore(" ").ifBlank { "0" }
+    return LatestStats(
+        active = value("active"),
+        cf = value("cf"),
+        ws = value("ws"),
+        tcp = value("tcp_fb"),
+        errors = value("err"),
+        up = value("up"),
+        down = value("down"),
+    )
+}
+
+@Composable
+private fun getErrorColor(errors: String): Color {
+    return if ((errors.toIntOrNull() ?: 0) > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
 }
 
 @Composable
@@ -505,7 +763,7 @@ private fun LogsCard(text: UiStrings, lines: List<String>) {
 }
 
 @Composable
-private fun Header(status: ProxyStatus, text: UiStrings, onMenu: () -> Unit) {
+private fun Header(status: ProxyStatus, text: UiStrings) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -525,14 +783,11 @@ private fun Header(status: ProxyStatus, text: UiStrings, onMenu: () -> Unit) {
                         color = if (status.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = onMenu) { Text(text.menu) }
-                    Box(
-                        modifier = Modifier.size(14.dp).clip(CircleShape).background(
-                            if (status.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-                        ),
-                    )
-                }
+                Box(
+                    modifier = Modifier.size(14.dp).clip(CircleShape).background(
+                        if (status.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                    ),
+                )
             }
             if (status.isRunning) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

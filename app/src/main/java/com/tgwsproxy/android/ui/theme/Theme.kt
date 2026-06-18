@@ -15,9 +15,12 @@ private val DarkColorScheme = darkColorScheme(
     primary = Cyan80,
     secondary = Teal80,
     tertiary = Amber80,
-    background = androidx.compose.ui.graphics.Color(0xFF071416),
-    surface = androidx.compose.ui.graphics.Color(0xFF102326),
-    surfaceVariant = androidx.compose.ui.graphics.Color(0xFF183338),
+    background = DeepNight,
+    surface = NightPanel,
+    surfaceVariant = NightPanelAlt,
+    outline = NightLine,
+    onSurface = androidx.compose.ui.graphics.Color(0xFFEAF6FA),
+    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF9EB4C1),
 )
 
 private val LightColorScheme = lightColorScheme(
