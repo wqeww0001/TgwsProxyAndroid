@@ -12,8 +12,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Cyan80,
-    secondary = Teal80,
+    primary = Pine80,
+    secondary = Mist80,
     tertiary = Amber80,
     background = DeepNight,
     surface = NightPanel,
@@ -21,6 +21,10 @@ private val DarkColorScheme = darkColorScheme(
     outline = NightLine,
     onSurface = androidx.compose.ui.graphics.Color(0xFFEAF6FA),
     onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF9EB4C1),
+    primaryContainer = androidx.compose.ui.graphics.Color(0xFF183529),
+    onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFFE6FFF4),
+    secondaryContainer = androidx.compose.ui.graphics.Color(0xFF243039),
+    onSecondaryContainer = androidx.compose.ui.graphics.Color(0xFFE9F1F5),
 )
 
 private val LightColorScheme = lightColorScheme(

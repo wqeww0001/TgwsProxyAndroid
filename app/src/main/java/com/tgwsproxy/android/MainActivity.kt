@@ -19,6 +19,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -57,9 +62,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,6 +79,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -184,6 +194,15 @@ private data class UiStrings(
     val downloading: String,
     val installerOpened: String,
     val updateFailed: String,
+    val autoUpdates: String,
+    val autoUpdatesEnabled: String,
+    val autoUpdatesWarning: String,
+    val disableAnyway: String,
+    val keepEnabled: String,
+    val updateInterval: String,
+    val minutesShort: String,
+    val hoursShort: String,
+    val splashSubtitle: String,
 )
 
 private fun strings(language: AppLanguage): UiStrings = when (language) {
@@ -229,6 +248,15 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         downloading = "Скачиваю",
         installerOpened = "Открыт установщик версии",
         updateFailed = "Ошибка обновления",
+        autoUpdates = "Автообновления",
+        autoUpdatesEnabled = "Автопроверка включена",
+        autoUpdatesWarning = "Отключать автообновления не стоит: через них приходят обязательные исправления прокси и безопасности. Но если нужно, отключить можно.",
+        disableAnyway = "Отключить",
+        keepEnabled = "Оставить",
+        updateInterval = "Интервал проверки",
+        minutesShort = "мин",
+        hoursShort = "ч",
+        splashSubtitle = "Rust core, Cloudflare fallback",
     )
     AppLanguage.En -> UiStrings(
         menu = "Menu",
@@ -272,6 +300,15 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         downloading = "Downloading",
         installerOpened = "Installer opened for version",
         updateFailed = "Update failed",
+        autoUpdates = "Auto updates",
+        autoUpdatesEnabled = "Auto check enabled",
+        autoUpdatesWarning = "Disabling auto updates is not recommended: required proxy and security fixes arrive through them. You can still disable it.",
+        disableAnyway = "Disable",
+        keepEnabled = "Keep enabled",
+        updateInterval = "Check interval",
+        minutesShort = "min",
+        hoursShort = "h",
+        splashSubtitle = "Rust core, Cloudflare fallback",
     )
 }
 
@@ -294,7 +331,50 @@ fun ProxyScreen() {
     var updateMessage by remember(language) { mutableStateOf("${text.currentVersion}: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+    var autoUpdateEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_UPDATE_ENABLED_PREF, true)) }
+    var autoUpdateMinutes by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_UPDATE_INTERVAL_PREF, DEFAULT_AUTO_UPDATE_MINUTES.toString()).toIntOrNull()?.coerceIn(15, 24 * 60) ?: DEFAULT_AUTO_UPDATE_MINUTES) }
+    var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
+    var showSplash by rememberSaveable { mutableStateOf(true) }
     val link = remember(secret) { ProxyConfig.telegramProxyLink(secret, "") }
+
+    fun runUpdateCheck(manual: Boolean) {
+        if (updateBusy) return
+        updateBusy = true
+        if (manual) updateMessage = if (requiredUpdate != null) text.downloadingRequiredUpdate else text.checkingGithub
+        CoroutineScope(Dispatchers.IO).launch {
+            val result = runCatching {
+                val current = UpdateChecker.currentVersion(context)
+                val update = requiredUpdate ?: UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
+                if (update == null) {
+                    "${text.noUpdateFound}: $current"
+                } else {
+                    withContext(Dispatchers.Main) {
+                        requiredUpdate = update
+                        context.stopService(Intent(context, ProxyService::class.java))
+                        proxyStatus = ProxyStatus(false)
+                        context.notifyRequiredUpdate(update, text)
+                    }
+                    if (manual) {
+                        withContext(Dispatchers.Main) { updateMessage = "${text.downloading} ${update.version}..." }
+                        val apk = UpdateChecker.downloadApk(context, update)
+                        withContext(Dispatchers.Main) { UpdateChecker.installApk(context, apk) }
+                        "${text.installerOpened} ${update.version}"
+                    } else {
+                        "${text.requiredUpdate} ${update.version}. ${text.installToContinue}"
+                    }
+                }
+            }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
+            withContext(Dispatchers.Main) {
+                updateMessage = result
+                updateBusy = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(1200)
+        showSplash = false
+    }
 
     DisposableEffect(Unit) {
         val scope = CoroutineScope(Dispatchers.IO)
@@ -317,52 +397,43 @@ fun ProxyScreen() {
         onDispose { job.cancel() }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(autoUpdateEnabled, autoUpdateMinutes, language) {
         val scope = CoroutineScope(Dispatchers.IO)
         val job = scope.launch {
-            val result = runCatching {
-                val current = UpdateChecker.currentVersion(context)
-                UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
-            }
-            withContext(Dispatchers.Main) {
-                result.onSuccess { update ->
-                    requiredUpdate = update
-                    if (update != null) {
-                        context.stopService(Intent(context, ProxyService::class.java))
-                        proxyStatus = ProxyStatus(false)
-                        updateMessage = "${text.requiredUpdate} ${update.version}. ${text.installToContinue}"
-                        context.notifyRequiredUpdate(update, text)
-                    }
-                }.onFailure {
-                    updateMessage = "${text.updateCheckFailed}: ${UpdateChecker.currentVersion(context)}"
-                }
+            if (!autoUpdateEnabled) return@launch
+            while (isActive) {
+                withContext(Dispatchers.Main) { runUpdateCheck(manual = false) }
+                delay(autoUpdateMinutes * 60_000L)
             }
         }
         onDispose { job.cancel() }
     }
 
-    fun runUpdateCheck() {
-        updateBusy = true
-        updateMessage = if (requiredUpdate != null) text.downloadingRequiredUpdate else text.checkingGithub
-        CoroutineScope(Dispatchers.IO).launch {
-            val result = runCatching {
-                val current = UpdateChecker.currentVersion(context)
-                val update = requiredUpdate ?: UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
-                if (update == null) {
-                    "${text.noUpdateFound}: $current"
-                } else {
-                    context.notifyRequiredUpdate(update, text)
-                    withContext(Dispatchers.Main) { updateMessage = "${text.downloading} ${update.version}..." }
-                    val apk = UpdateChecker.downloadApk(context, update)
-                    withContext(Dispatchers.Main) { UpdateChecker.installApk(context, apk) }
-                    "${text.installerOpened} ${update.version}"
+    if (showDisableAutoUpdateWarning) {
+        AlertDialog(
+            onDismissRequest = { showDisableAutoUpdateWarning = false },
+            title = { Text(text.autoUpdates) },
+            text = { Text(text.autoUpdatesWarning) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        autoUpdateEnabled = false
+                        context.saveProxyPref(AUTO_UPDATE_ENABLED_PREF, false)
+                        showDisableAutoUpdateWarning = false
+                    },
+                ) { Text(text.disableAnyway) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDisableAutoUpdateWarning = false }) {
+                    Text(text.keepEnabled)
                 }
-            }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
-            withContext(Dispatchers.Main) {
-                updateMessage = result
-                updateBusy = false
-            }
-        }
+            },
+        )
+    }
+
+    if (showSplash) {
+        SplashScreen(text)
+        return
     }
 
     Scaffold(
@@ -435,7 +506,21 @@ fun ProxyScreen() {
                         updateMessage = updateMessage,
                         updateBusy = updateBusy,
                         requiredUpdate = requiredUpdate != null,
-                        onCheckUpdate = ::runUpdateCheck,
+                        autoUpdateEnabled = autoUpdateEnabled,
+                        autoUpdateMinutes = autoUpdateMinutes,
+                        onAutoUpdateEnabledChange = { enabled ->
+                            if (!enabled) {
+                                showDisableAutoUpdateWarning = true
+                            } else {
+                                autoUpdateEnabled = true
+                                context.saveProxyPref(AUTO_UPDATE_ENABLED_PREF, true)
+                            }
+                        },
+                        onAutoUpdateMinutesChange = {
+                            autoUpdateMinutes = it
+                            context.saveProxyPref(AUTO_UPDATE_INTERVAL_PREF, it.toString())
+                        },
+                        onCheckUpdate = { runUpdateCheck(manual = true) },
                     )
                     AppTab.Help -> HelpPage(language)
                 }
@@ -557,6 +642,10 @@ private fun SettingsPage(
     updateMessage: String,
     updateBusy: Boolean,
     requiredUpdate: Boolean,
+    autoUpdateEnabled: Boolean,
+    autoUpdateMinutes: Int,
+    onAutoUpdateEnabledChange: (Boolean) -> Unit,
+    onAutoUpdateMinutesChange: (Int) -> Unit,
     onCheckUpdate: () -> Unit,
 ) {
     PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(LocalContext.current))
@@ -569,6 +658,13 @@ private fun SettingsPage(
         onCfWorkerDomainChange = onCfWorkerDomainChange,
         enabled = enabled,
     )
+    AutoUpdateCard(
+        text = text,
+        enabled = autoUpdateEnabled,
+        minutes = autoUpdateMinutes,
+        onEnabledChange = onAutoUpdateEnabledChange,
+        onMinutesChange = onAutoUpdateMinutesChange,
+    )
     UpdateCard(
         text = text,
         message = updateMessage,
@@ -576,6 +672,47 @@ private fun SettingsPage(
         required = requiredUpdate,
         onCheck = onCheckUpdate,
     )
+}
+
+@Composable
+private fun SplashScreen(text: UiStrings) {
+    val infinite = rememberInfiniteTransition(label = "splash")
+    val scale by infinite.animateFloat(
+        initialValue = 0.94f,
+        targetValue = 1.05f,
+        animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
+        label = "mark-scale",
+    )
+    val alpha by infinite.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
+        label = "mark-alpha",
+    )
+    Box(
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(112.dp)
+                    .graphicsLayer(scaleX = scale, scaleY = scale, alpha = alpha)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    modifier = Modifier.size(108.dp),
+                )
+            }
+            Text("TG WS Proxy", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(text.splashSubtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 @Composable
@@ -629,6 +766,50 @@ private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChang
             }
             OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.En, onClick = { onLanguageChange(AppLanguage.En) }) {
                 Text(text.english)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoUpdateCard(
+    text: UiStrings,
+    enabled: Boolean,
+    minutes: Int,
+    onEnabledChange: (Boolean) -> Unit,
+    onMinutesChange: (Int) -> Unit,
+) {
+    val options = listOf(30, 60, 180, 360)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text.autoUpdates, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (enabled) text.autoUpdatesEnabled else text.autoUpdatesWarning,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+            }
+            Text(text.updateInterval, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                options.forEach { option ->
+                    val label = if (option < 60) "${option}${text.minutesShort}" else "${option / 60}${text.hoursShort}"
+                    val selected = minutes == option
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        enabled = enabled,
+                        onClick = { onMinutesChange(option) },
+                    ) {
+                        Text(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    }
+                }
             }
         }
     }
@@ -797,7 +978,7 @@ private fun Header(status: ProxyStatus, text: UiStrings) {
             }
             Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
                 Image(
-                    painter = painterResource(id = R.drawable.proxy_app_icon),
+                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
                     contentDescription = null,
                     modifier = Modifier.size(112.dp),
                     contentScale = ContentScale.Fit,
@@ -998,6 +1179,9 @@ private fun Context.notifyRequiredUpdate(update: UpdateInfo, text: UiStrings) {
 private const val UPDATE_CHANNEL_ID = "updates"
 private const val UPDATE_NOTIFICATION_ID = 2001
 private const val LANGUAGE_PREF = "ui_language"
+private const val AUTO_UPDATE_ENABLED_PREF = "auto_update_enabled"
+private const val AUTO_UPDATE_INTERVAL_PREF = "auto_update_interval_minutes"
+private const val DEFAULT_AUTO_UPDATE_MINUTES = 30
 private const val PROXY_PREFS = "proxy"
 
 @Preview(showBackground = true)

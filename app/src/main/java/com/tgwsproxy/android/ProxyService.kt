@@ -7,8 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -38,9 +36,6 @@ class ProxyService : Service() {
     private var statsJob: Job? = null
     private var watchdogJob: Job? = null
     private var serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val largeIcon: Bitmap by lazy {
-        BitmapFactory.decodeResource(resources, R.drawable.proxy_app_icon)
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -274,7 +269,6 @@ class ProxyService : Service() {
         val uptime = formatUptime(System.currentTimeMillis() - startTime)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setLargeIcon(largeIcon)
             .setContentTitle("TG WS Proxy active")
             .setContentText("${ProxyConfig.HOST}:${ProxyConfig.PORT} | $uptime | $content")
             .setContentIntent(pendingIntent)
