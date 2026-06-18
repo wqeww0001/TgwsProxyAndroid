@@ -177,8 +177,8 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         proxyOptions = "Настройки прокси",
         fakeTlsDomain = "Fake TLS домен",
         emptyDdSecret = "пусто = dd secret",
-        cfWorkerDomain = "Cloudflare Worker домен",
-        emptyDirectFallback = "пусто = встроенный Worker",
+        cfWorkerDomain = "Cloudflare домен",
+        emptyDirectFallback = "пусто = авто CF + TCP fallback",
         updateCheck = "Проверка обновлений",
         requiredUpdate = "Обязательное обновление",
         working = "Работаю...",
@@ -220,8 +220,8 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         proxyOptions = "Proxy options",
         fakeTlsDomain = "Fake TLS domain",
         emptyDdSecret = "empty = dd secret",
-        cfWorkerDomain = "Cloudflare Worker domain",
-        emptyDirectFallback = "empty = bundled Worker",
+        cfWorkerDomain = "Cloudflare domain",
+        emptyDirectFallback = "empty = auto CF + TCP fallback",
         updateCheck = "Update check",
         requiredUpdate = "Required update",
         working = "Working...",
@@ -264,11 +264,11 @@ fun ProxyScreen() {
     var logLines by remember { mutableStateOf(emptyList<String>()) }
     val secret = rememberSaveable { context.getOrCreateProxySecret() }
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
-    var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN).ifBlank { ProxyConfig.DEFAULT_CF_WORKER_DOMAIN }) }
+    var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
     var updateMessage by remember(language) { mutableStateOf("${text.currentVersion}: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
-    val link = remember(secret, fakeTlsDomain) { ProxyConfig.telegramProxyLink(secret, fakeTlsDomain) }
+    val link = remember(secret) { ProxyConfig.telegramProxyLink(secret, "") }
 
     DisposableEffect(Unit) {
         val scope = CoroutineScope(Dispatchers.IO)
@@ -636,18 +636,18 @@ private fun getPingColor(ping: Long): Color = when {
 }
 
 private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfWorkerDomain: String) {
-    val cleanWorkerDomain = ProxyConfig.cleanDomain(cfWorkerDomain).ifBlank { ProxyConfig.DEFAULT_CF_WORKER_DOMAIN }
+    val cleanWorkerDomain = ProxyConfig.cleanDomain(cfWorkerDomain).takeIf { it.endsWith(".co.uk") }.orEmpty()
     saveProxyPref(ProxyService.EXTRA_SECRET, secret)
-    saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+    saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
-    saveProxyPref(ProxyService.EXTRA_CF_ENABLED, false)
-    saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, "")
+    saveProxyPref(ProxyService.EXTRA_CF_ENABLED, true)
+    saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
-        .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+        .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
-        .putExtra(ProxyService.EXTRA_CF_ENABLED, false)
-        .putExtra(ProxyService.EXTRA_CF_DOMAIN, "")
+        .putExtra(ProxyService.EXTRA_CF_ENABLED, true)
+        .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     ContextCompat.startForegroundService(this, intent)
 }
 

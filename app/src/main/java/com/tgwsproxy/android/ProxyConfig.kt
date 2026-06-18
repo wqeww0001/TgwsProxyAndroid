@@ -5,7 +5,7 @@ import java.security.SecureRandom
 object ProxyConfig {
     const val HOST = "127.0.0.1"
     const val PORT = 1443
-    const val DEFAULT_CF_WORKER_DOMAIN = "cool-mountain-f1d1.wqeww001.workers.dev"
+    const val DEFAULT_CF_WORKER_DOMAIN = ""
 
     fun generateSecret(): String {
         val bytes = ByteArray(16)
