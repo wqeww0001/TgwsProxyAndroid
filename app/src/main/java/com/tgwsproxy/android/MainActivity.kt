@@ -24,7 +24,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -80,7 +79,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -603,12 +601,12 @@ private fun HomePage(
         FilledTonalButton(modifier = Modifier.weight(1f), onClick = onCopyLink) {
             Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
-            Text(text.copyTelegramLink)
+            ButtonText(text.copyTelegramLink)
         }
         Button(modifier = Modifier.weight(1f), onClick = onOpenTelegram) {
             Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
-            Text(text.openInTelegram)
+            ButtonText(text.openInTelegram)
         }
     }
     LogsCard(text, logs.takeLast(6))
@@ -624,7 +622,7 @@ private fun LogsPage(
     FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = onDownload) {
         Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.size(8.dp))
-        Text(text.downloadLogs)
+        ButtonText(text.downloadLogs)
     }
     LogsCard(text, logs)
 }
@@ -719,29 +717,41 @@ private fun SplashScreen(text: UiStrings) {
 private fun HelpPage(language: AppLanguage) {
     val ru = language == AppLanguage.Ru
     PageTitle(if (ru) "Помощь" else "Help", "Rust + Tokio core")
-    HelpCard(
-        title = if (ru) "Как подключаться" else "How to connect",
-        body = if (ru) {
-            "Запусти прокси, нажми открыть в Telegram и включи добавленный локальный MTProto-прокси. Адрес остаётся 127.0.0.1:1443."
-        } else {
-            "Start the proxy, open the Telegram link, then enable the local MTProto proxy. The endpoint stays 127.0.0.1:1443."
-        },
+    HelpCategory(
+        title = if (ru) "Подключение" else "Connection",
+        items = if (ru) listOf(
+            "Запуск" to "Нажми Start и дождись статуса Active. Локальный адрес остаётся 127.0.0.1:1443.",
+            "Telegram" to "Нажми открыть в Telegram и включи добавленный MTProto-прокси. Повторно удалять его обычно не нужно.",
+            "Если висит подключение" to "Открой логи: если down растёт, данные идут. Если только err или timeout, проверь сеть и попробуй Stop/Start.",
+        ) else listOf(
+            "Start" to "Tap Start and wait for Active. The local endpoint stays 127.0.0.1:1443.",
+            "Telegram" to "Open the Telegram link and enable the added MTProto proxy. You normally do not need to delete it again.",
+            "Stuck connecting" to "Check logs: if down grows, data is flowing. If only err or timeout grows, check the network and try Stop/Start.",
+        ),
     )
-    HelpCard(
-        title = if (ru) "Cloudflare режим" else "Cloudflare mode",
-        body = if (ru) {
-            "Пустое поле Cloudflare использует встроенный список доменов и TCP fallback. Старый workers.dev больше не нужен."
-        } else {
-            "An empty Cloudflare field uses the built-in domain list and TCP fallback. The old workers.dev relay is no longer needed."
-        },
+    HelpCategory(
+        title = if (ru) "Сеть" else "Network",
+        items = if (ru) listOf(
+            "Cloudflare" to "Пустое поле Cloudflare использует встроенный список доменов. Workers.dev relay больше не нужен.",
+            "TCP fallback" to "Если Cloudflare не отвечает, ядро пробует прямой TCP fallback и не ломает клиентское соединение сразу.",
+            "Keepalive" to "Rust/Tokio ядро держит TCP и WebSocket соединения живыми ping/pong и watchdog-проверками.",
+        ) else listOf(
+            "Cloudflare" to "An empty Cloudflare field uses the built-in domain list. The workers.dev relay is no longer needed.",
+            "TCP fallback" to "If Cloudflare does not respond, the core tries direct TCP fallback without immediately breaking the client connection.",
+            "Keepalive" to "The Rust/Tokio core keeps TCP and WebSocket connections alive with ping/pong and watchdog checks.",
+        ),
     )
-    HelpCard(
-        title = if (ru) "Что значат логи" else "Reading logs",
-        body = if (ru) {
-            "cf показывает подключения через Cloudflare, tcp_fb - прямой TCP fallback, err - ошибки WS. Если down растёт, Telegram получает данные."
-        } else {
-            "cf means Cloudflare routes, tcp_fb is direct TCP fallback, err is WS errors. If down grows, Telegram is receiving data."
-        },
+    HelpCategory(
+        title = if (ru) "Логи и обновления" else "Logs and updates",
+        items = if (ru) listOf(
+            "Статистика" to "cf - Cloudflare маршруты, tcp_fb - прямой TCP fallback, err - ошибки, down - данные к Telegram.",
+            "Скачать логи" to "На вкладке Logs можно сохранить файл логов в загрузки телефона и отправить его для диагностики.",
+            "Обновления" to "Автопроверка ищет релиз на GitHub. Отключать её можно, но лучше оставлять включённой.",
+        ) else listOf(
+            "Stats" to "cf means Cloudflare routes, tcp_fb is direct TCP fallback, err is errors, down is data sent to Telegram.",
+            "Download logs" to "The Logs tab can save a log file to the phone Downloads folder for debugging.",
+            "Updates" to "Auto-check looks for GitHub releases. You can disable it, but keeping it enabled is recommended.",
+        ),
     )
 }
 
@@ -762,10 +772,10 @@ private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChang
     ) {
         Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.Ru, onClick = { onLanguageChange(AppLanguage.Ru) }) {
-                Text(text.russian)
+                ButtonText(text.russian)
             }
             OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.En, onClick = { onLanguageChange(AppLanguage.En) }) {
-                Text(text.english)
+                ButtonText(text.english)
             }
         }
     }
@@ -807,7 +817,7 @@ private fun AutoUpdateCard(
                         enabled = enabled,
                         onClick = { onMinutesChange(option) },
                     ) {
-                        Text(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                        ButtonText(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                     }
                 }
             }
@@ -816,17 +826,32 @@ private fun AutoUpdateCard(
 }
 
 @Composable
-private fun HelpCard(title: String, body: String) {
+private fun HelpCategory(title: String, items: List<Pair<String, String>>) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            items.forEach { (label, body) ->
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun ButtonText(label: String, color: Color = Color.Unspecified) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelMedium,
+        color = color,
+        maxLines = 2,
+    )
 }
 
 @Composable
@@ -864,8 +889,8 @@ private fun ControlPanel(text: UiStrings, running: Boolean, locked: Boolean, onS
                 Text(if (running) text.active else text.stopped, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text("${ProxyConfig.HOST}:${ProxyConfig.PORT}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (!running) Button(onClick = onStart, enabled = !locked) { Text(text.start) }
-            if (running) OutlinedButton(onClick = onStop) { Text(text.stop) }
+            if (!running) Button(onClick = onStart, enabled = !locked) { ButtonText(text.start) }
+            if (running) OutlinedButton(onClick = onStop) { ButtonText(text.stop) }
         }
     }
 }
@@ -910,7 +935,7 @@ private fun UpdateCard(
                 color = if (required) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
             )
             Button(modifier = Modifier.fillMaxWidth(), onClick = onCheck, enabled = !busy) {
-                Text(
+                ButtonText(
                     when {
                         busy -> text.working
                         required -> text.installRequiredUpdate
@@ -975,14 +1000,6 @@ private fun Header(status: ProxyStatus, text: UiStrings) {
                     Metric(text.uptime, status.uptime)
                     Metric(text.service, if (status.localPing >= 0) text.online else "N/A", getPingColor(status.localPing))
                 }
-            }
-            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                    contentDescription = null,
-                    modifier = Modifier.size(112.dp),
-                    contentScale = ContentScale.Fit,
-                )
             }
         }
     }
@@ -1058,8 +1075,8 @@ private fun SettingsCard(
 @Composable
 private fun ControlButtons(text: UiStrings, running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(modifier = Modifier.weight(1f), onClick = onStart, enabled = !running && !locked) { Text(text.start) }
-        OutlinedButton(modifier = Modifier.weight(1f), onClick = onStop, enabled = running) { Text(text.stop) }
+        Button(modifier = Modifier.weight(1f), onClick = onStart, enabled = !running && !locked) { ButtonText(text.start) }
+        OutlinedButton(modifier = Modifier.weight(1f), onClick = onStop, enabled = running) { ButtonText(text.stop) }
     }
 }
 
