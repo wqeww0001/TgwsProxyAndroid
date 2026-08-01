@@ -1,21 +1,11 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# JNA resolves these classes, fields and methods by their original names from
+# native code. Renaming Pointer.peer, for example, makes Native.initIDs fail
+# before the Rust proxy library can be loaded.
+-keep class com.sun.jna.** { *; }
+-keep interface com.sun.jna.** { *; }
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Native.load maps these interface method names directly to exported Rust C
+# symbols such as StartProxy and GetStats.
+-keep interface com.tgwsproxy.android.ProxyLibrary { *; }
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
-
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+-dontwarn java.awt.**
