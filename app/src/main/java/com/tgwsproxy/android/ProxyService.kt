@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.edit
 import com.tgwsproxy.android.proxy.ProxyLogger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ProxyService : Service() {
     private val nativeRunning = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wakeLockAcquiredAtMs: Long = 0
     private var startTime: Long = 0
     private var lastPing: Long = -1
     private var lastNotificationContent: String = ""
@@ -49,8 +51,9 @@ class ProxyService : Service() {
         }
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val secret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf { it.isNotBlank() }
-            ?: prefs.getString(EXTRA_SECRET, "").orEmpty()
+        val secret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf(ProxyConfig::isValidSecret)
+            ?.also { SecureSecretStore.save(this, it) }
+            ?: SecureSecretStore.load(this).orEmpty()
         if (secret.isBlank()) {
             stopSelf()
             return START_NOT_STICKY
@@ -60,14 +63,17 @@ class ProxyService : Service() {
             intent?.getStringExtra(EXTRA_CF_WORKER_DOMAIN)
                 ?: prefs.getString(EXTRA_CF_WORKER_DOMAIN, "").orEmpty(),
         )
+        val fakeTlsDomain = ProxyConfig.normalizeDomain(
+            intent?.getStringExtra(EXTRA_FAKE_TLS_DOMAIN)
+                ?: prefs.getString(EXTRA_FAKE_TLS_DOMAIN, "").orEmpty(),
+        )
 
-        prefs.edit()
-            .putString(EXTRA_SECRET, secret)
-            .putString(EXTRA_FAKE_TLS_DOMAIN, "")
-            .putString(EXTRA_CF_WORKER_DOMAIN, cfDomain)
-            .putString(EXTRA_CF_DOMAIN, cfDomain)
-            .putBoolean(EXTRA_CF_ENABLED, true)
-            .apply()
+        prefs.edit {
+            putString(EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+            putString(EXTRA_CF_WORKER_DOMAIN, cfDomain)
+            putString(EXTRA_CF_DOMAIN, cfDomain)
+            putBoolean(EXTRA_CF_ENABLED, true)
+        }
 
         startForeground(NOTIFICATION_ID, buildNotification("starting"))
 
@@ -75,7 +81,7 @@ class ProxyService : Service() {
             startNativeProxy(secret, cfDomain)
         }
 
-        return START_REDELIVER_INTENT
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -162,6 +168,7 @@ class ProxyService : Service() {
             while (isActive) {
                 delay(3000)
                 if (!nativeRunning.get()) continue
+                renewWakeLockIfNeeded()
                 val online = isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 700)
                 lastPing = if (online) 0 else -1
                 ProxyServiceStatus.lastPing = lastPing
@@ -220,9 +227,16 @@ class ProxyService : Service() {
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TgWsProxy::RustCore").apply {
                 acquire(WAKELOCK_TIMEOUT_MS)
             }
+            wakeLockAcquiredAtMs = System.currentTimeMillis()
         }.onFailure {
             ProxyLogger.w("WakeLock acquire failed", it)
         }
+    }
+
+    private fun renewWakeLockIfNeeded() {
+        val age = System.currentTimeMillis() - wakeLockAcquiredAtMs
+        if (wakeLock?.isHeld == true && age < WAKELOCK_RENEW_AFTER_MS) return
+        acquireWakeLock()
     }
 
     private fun releaseWakeLock() {
@@ -230,6 +244,7 @@ class ProxyService : Service() {
             wakeLock?.takeIf { it.isHeld }?.release()
         }
         wakeLock = null
+        wakeLockAcquiredAtMs = 0
     }
 
     private fun formatUptime(millis: Long): String {
@@ -281,7 +296,6 @@ class ProxyService : Service() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(CHANNEL_ID, "Proxy", NotificationManager.IMPORTANCE_LOW).apply {
             setShowBadge(false)
             setSound(null, null)
@@ -292,8 +306,7 @@ class ProxyService : Service() {
     }
 
     private fun normalizeNativeCfDomain(value: String): String {
-        val clean = ProxyConfig.cleanDomain(value).lowercase()
-        return if (clean.endsWith(".co.uk")) clean else ""
+        return ProxyConfig.normalizeDomain(value)
     }
 
     companion object {
@@ -309,5 +322,6 @@ class ProxyService : Service() {
         private const val DEFAULT_POOL_SIZE = 4
         private const val NOTIFICATION_MIN_UPDATE_MS = 3000L
         private const val WAKELOCK_TIMEOUT_MS = 30L * 60 * 1000
+        private const val WAKELOCK_RENEW_AFTER_MS = 20L * 60 * 1000
     }
 }

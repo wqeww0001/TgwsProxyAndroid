@@ -43,11 +43,40 @@ pub fn decode_cf_domain(s: &str) -> String {
 }
 
 pub fn normalize_cf_domain(s: &str) -> String {
-    let mut decoded = decode_cf_domain(s.trim()).trim().to_lowercase();
+    let decoded = decode_cf_domain(s.trim()).trim().to_lowercase();
+    let decoded = decoded
+        .strip_prefix("https://")
+        .or_else(|| decoded.strip_prefix("http://"))
+        .unwrap_or(&decoded);
+    let mut decoded = decoded
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_string();
     while decoded.ends_with('.') {
         decoded.pop();
     }
-    if decoded.is_empty() || !decoded.ends_with(".co.uk") {
+    let valid = decoded.len() <= 253
+        && decoded.contains('.')
+        && decoded.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    if !valid {
         return String::new();
     }
     decoded
@@ -167,7 +196,11 @@ pub fn mark_cfproxy_429_cooldown(domain: &str, err: &WsError) {
         },
     );
     drop(map);
-    ldebug!(" CF cooldown {}: {:.0}s after 429", d, delay.as_secs_f64().ceil());
+    ldebug!(
+        " CF cooldown {}: {:.0}s after 429",
+        d,
+        delay.as_secs_f64().ceil()
+    );
 }
 
 pub fn cfproxy_429_cooldown_remaining(domain: &str) -> Duration {
@@ -519,11 +552,9 @@ pub async fn resolve_doh(domain: &str) -> Option<String> {
         let tx = tx.clone();
         tasks.push(tokio::spawn(async move {
             let host = format!("{}:443", domain2);
-            if let Ok(Ok(addrs)) = tokio::time::timeout(
-                Duration::from_millis(1500),
-                tokio::net::lookup_host(host),
-            )
-            .await
+            if let Ok(Ok(addrs)) =
+                tokio::time::timeout(Duration::from_millis(1500), tokio::net::lookup_host(host))
+                    .await
             {
                 let ips: Vec<String> = addrs.map(|a| a.ip().to_string()).collect();
                 let p = pick_preferred_ip(&ips);
@@ -571,7 +602,7 @@ pub async fn resolve_doh(domain: &str) -> Option<String> {
             (ip.clone(), Instant::now() + Duration::from_secs(300)),
         );
     }
-    
+
     final_ip
 }
 
@@ -655,5 +686,28 @@ pub fn set_active_domain_and_save(chosen: &str) {
             save_active_cfproxy_domain(&chosen_owned);
         }
         linfo!(" CF домен  {}", chosen);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_domains_without_paths_or_ports() {
+        assert_eq!(
+            normalize_cf_domain("https://Example.COM/path"),
+            "example.com"
+        );
+        assert_eq!(normalize_cf_domain("example.com:443"), "example.com");
+    }
+
+    #[test]
+    fn merges_domains_in_stable_order() {
+        let merged = merge_cfproxy_domains(&[
+            vec!["A.example".into(), "b.example".into()],
+            vec!["a.example".into(), "c.example".into()],
+        ]);
+        assert_eq!(merged, vec!["a.example", "b.example", "c.example"]);
     }
 }

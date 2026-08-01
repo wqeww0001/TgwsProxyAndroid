@@ -108,8 +108,15 @@ pub unsafe extern "C" fn StartProxy(
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
                 let _ = tx.send(Ok(()));
-                if let Err(e) =
-                    run_proxy(pool_task, host_task, go_port, map_task, cancel_root, listener).await
+                if let Err(e) = run_proxy(
+                    pool_task,
+                    host_task,
+                    go_port,
+                    map_task,
+                    cancel_root,
+                    listener,
+                )
+                .await
                 {
                     lerror!("listen on {}: {}", addr, e);
                 }
@@ -237,7 +244,9 @@ pub extern "C" fn GetStats() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn GetSecretWithPrefix() -> *mut c_char {
     let sec = PROXY_SECRET.read().clone();
-    CString::new(format!("dd{}", sec)).unwrap_or_default().into_raw()
+    CString::new(format!("dd{}", sec))
+        .unwrap_or_default()
+        .into_raw()
 }
 
 /// # Safety

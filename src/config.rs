@@ -49,7 +49,10 @@ pub struct Cfproxy429State {
 
 impl Default for Cfproxy429State {
     fn default() -> Self {
-        Cfproxy429State { until: None, strikes: 0 }
+        Cfproxy429State {
+            until: None,
+            strikes: 0,
+        }
     }
 }
 
@@ -176,7 +179,10 @@ impl Stats {
     }
 
     pub fn summary_ru(&self) -> String {
-        let mut parts = vec![format!("акт:{}", self.connections_active.load(Ordering::Relaxed))];
+        let mut parts = vec![format!(
+            "акт:{}",
+            self.connections_active.load(Ordering::Relaxed)
+        )];
         let ws = self.connections_ws.load(Ordering::Relaxed);
         if ws > 0 {
             parts.push(format!("ws:{}", ws));
@@ -241,9 +247,11 @@ fn android_log_line(line: &str) {
         fn __android_log_print(prio: i32, tag: *const i8, fmt: *const i8, ...) -> i32;
     }
     const ANDROID_LOG_INFO: i32 = 4;
-    if let (Ok(tag), Ok(fmt), Ok(msg)) =
-        (CString::new("TgWsProxy"), CString::new("%s"), CString::new(line))
-    {
+    if let (Ok(tag), Ok(fmt), Ok(msg)) = (
+        CString::new("TgWsProxy"),
+        CString::new("%s"),
+        CString::new(line),
+    ) {
         unsafe {
             __android_log_print(
                 ANDROID_LOG_INFO,

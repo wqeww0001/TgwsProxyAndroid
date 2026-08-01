@@ -10,7 +10,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -25,6 +24,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,14 +43,16 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Article
+import androidx.compose.material.icons.automirrored.rounded.Article
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -70,6 +72,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -78,6 +81,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -88,6 +92,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.ui.theme.TgwsProxyAndroidTheme
 import kotlinx.coroutines.CoroutineScope
@@ -330,10 +336,10 @@ fun ProxyScreen() {
     var updateBusy by remember { mutableStateOf(false) }
     var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
     var autoUpdateEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_UPDATE_ENABLED_PREF, true)) }
-    var autoUpdateMinutes by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_UPDATE_INTERVAL_PREF, DEFAULT_AUTO_UPDATE_MINUTES.toString()).toIntOrNull()?.coerceIn(15, 24 * 60) ?: DEFAULT_AUTO_UPDATE_MINUTES) }
+    var autoUpdateMinutes by rememberSaveable { mutableIntStateOf(context.getProxyPref(AUTO_UPDATE_INTERVAL_PREF, DEFAULT_AUTO_UPDATE_MINUTES.toString()).toIntOrNull()?.coerceIn(15, 24 * 60) ?: DEFAULT_AUTO_UPDATE_MINUTES) }
     var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
     var showSplash by rememberSaveable { mutableStateOf(true) }
-    val link = remember(secret) { ProxyConfig.telegramProxyLink(secret, "") }
+    val link = remember(secret, fakeTlsDomain) { ProxyConfig.telegramProxyLink(secret, ProxyConfig.normalizeDomain(fakeTlsDomain)) }
 
     fun runUpdateCheck(manual: Boolean) {
         if (updateBusy) return
@@ -445,13 +451,23 @@ fun ProxyScreen() {
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { innerPadding ->
-        Surface(
-            modifier = Modifier.fillMaxSize().padding(innerPadding),
-            color = MaterialTheme.colorScheme.background,
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.background,
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f),
+                            MaterialTheme.colorScheme.background,
+                        ),
+                    ),
+                ),
         ) {
             Column(
-                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 when (selectedTab) {
                     AppTab.Home -> HomePage(
@@ -473,7 +489,7 @@ fun ProxyScreen() {
                             context.copyToClipboard(link)
                             Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
                         },
-                        onOpenTelegram = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) },
+                        onOpenTelegram = { context.startActivity(Intent(Intent.ACTION_VIEW, link.toUri())) },
                     )
                     AppTab.Logs -> LogsPage(
                         text = text,
@@ -532,7 +548,11 @@ private fun BottomTabs(
     language: AppLanguage,
     onSelect: (AppTab) -> Unit,
 ) {
-    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+    NavigationBar(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).clip(RoundedCornerShape(28.dp)),
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        tonalElevation = 4.dp,
+    ) {
         AppTab.entries.forEach { tab ->
             NavigationBarItem(
                 selected = selectedTab == tab,
@@ -541,9 +561,9 @@ private fun BottomTabs(
                     Icon(
                         imageVector = when (tab) {
                             AppTab.Home -> Icons.Rounded.Home
-                            AppTab.Logs -> Icons.Rounded.Article
+                            AppTab.Logs -> Icons.AutoMirrored.Rounded.Article
                             AppTab.Settings -> Icons.Rounded.Settings
-                            AppTab.Help -> Icons.Rounded.HelpOutline
+                            AppTab.Help -> Icons.AutoMirrored.Rounded.HelpOutline
                         },
                         contentDescription = tabTitle(tab, language),
                     )
@@ -604,7 +624,7 @@ private fun HomePage(
             ButtonText(text.copyTelegramLink)
         }
         Button(modifier = Modifier.weight(1f), onClick = onOpenTelegram) {
-            Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+            Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
             ButtonText(text.openInTelegram)
         }
@@ -688,7 +708,14 @@ private fun SplashScreen(text: UiStrings) {
         label = "mark-alpha",
     )
     Box(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        modifier = Modifier.fillMaxSize().background(
+            Brush.radialGradient(
+                colors = listOf(
+                    MaterialTheme.colorScheme.secondaryContainer,
+                    MaterialTheme.colorScheme.background,
+                ),
+            ),
+        ),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -767,7 +794,7 @@ private fun PageTitle(title: String, subtitle: String) {
 private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChange: (AppLanguage) -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -792,7 +819,7 @@ private fun AutoUpdateCard(
     val options = listOf(30, 60, 180, 360)
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -829,7 +856,7 @@ private fun AutoUpdateCard(
 private fun HelpCategory(title: String, items: List<Pair<String, String>>) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -858,8 +885,9 @@ private fun ButtonText(label: String, color: Color = Color.Unspecified) {
 private fun StatTile(label: String, value: String, modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.primary, compact: Boolean = false) {
     Card(
         modifier = modifier,
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -878,12 +906,26 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
 private fun ControlPanel(text: UiStrings, running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (running) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f) else MaterialTheme.colorScheme.surface,
+        ),
+        border = BorderStroke(1.dp, if (running) MaterialTheme.colorScheme.primary.copy(alpha = 0.32f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
     ) {
-        Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = if (running) onStop else onStart, enabled = !locked || running) {
-                Icon(Icons.Rounded.PowerSettingsNew, contentDescription = if (running) text.stop else text.start)
+        Row(modifier = Modifier.padding(18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(52.dp).clip(CircleShape).background(
+                    if (running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                IconButton(onClick = if (running) onStop else onStart, enabled = !locked || running) {
+                    Icon(
+                        Icons.Rounded.PowerSettingsNew,
+                        contentDescription = if (running) text.stop else text.start,
+                        tint = if (running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(if (running) text.active else text.stopped, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -924,7 +966,7 @@ private fun UpdateCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -952,7 +994,7 @@ private fun UpdateCard(
 private fun LogsCard(text: UiStrings, lines: List<String>) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -970,19 +1012,28 @@ private fun LogsCard(text: UiStrings, lines: List<String>) {
 
 @Composable
 private fun Header(status: ProxyStatus, text: UiStrings) {
+    val pulse = rememberInfiniteTransition(label = "status-pulse")
+    val statusAlpha by pulse.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(1200), repeatMode = RepeatMode.Reverse),
+        label = "status-alpha",
+    )
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(30.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f)),
     ) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("TG WS Proxy", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                    Text("TG WS", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                    Text("Proxy", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
                     Text(
                         if (status.isRunning) text.active else text.stopped,
                         style = MaterialTheme.typography.titleMedium,
@@ -990,7 +1041,7 @@ private fun Header(status: ProxyStatus, text: UiStrings) {
                     )
                 }
                 Box(
-                    modifier = Modifier.size(14.dp).clip(CircleShape).background(
+                    modifier = Modifier.size(16.dp).graphicsLayer(alpha = if (status.isRunning) statusAlpha else 1f).clip(CircleShape).background(
                         if (status.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
                     ),
                 )
@@ -1015,16 +1066,31 @@ private fun Metric(label: String, value: String, color: Color = MaterialTheme.co
 
 @Composable
 private fun ConnectionCard(text: UiStrings, secret: String, link: String, status: ProxyStatus) {
+    var secretVisible by rememberSaveable { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.localEndpoint, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("${ProxyConfig.HOST}:${ProxyConfig.PORT}", style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
-            Text(text.secret, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(secret.chunked(8).joinToString(" "), style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(text.secret, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (secretVisible) secret.chunked(8).joinToString(" ") else "•••••••• •••••••• •••••••• ••••••••",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                IconButton(onClick = { secretVisible = !secretVisible }) {
+                    Icon(
+                        if (secretVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                        contentDescription = text.secret,
+                    )
+                }
+            }
             if (status.isRunning) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(text.currentLink, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1045,7 +1111,7 @@ private fun SettingsCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1089,15 +1155,15 @@ private fun getPingColor(ping: Long): Color = when {
 }
 
 private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfWorkerDomain: String) {
-    val cleanWorkerDomain = ProxyConfig.cleanDomain(cfWorkerDomain).takeIf { it.endsWith(".co.uk") }.orEmpty()
-    saveProxyPref(ProxyService.EXTRA_SECRET, secret)
-    saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")
+    val cleanFakeTlsDomain = ProxyConfig.normalizeDomain(fakeTlsDomain)
+    val cleanWorkerDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
+    SecureSecretStore.save(this, secret)
+    saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, true)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     val intent = Intent(this, ProxyService::class.java)
-        .putExtra(ProxyService.EXTRA_SECRET, secret)
-        .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")
+        .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, true)
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
@@ -1105,11 +1171,7 @@ private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfW
 }
 
 private fun Context.getOrCreateProxySecret(): String {
-    val stored = getProxyPref(ProxyService.EXTRA_SECRET, "")
-    if (stored.isNotBlank()) return stored
-    val generated = ProxyConfig.generateSecret()
-    saveProxyPref(ProxyService.EXTRA_SECRET, generated)
-    return generated
+    return SecureSecretStore.getOrCreate(this)
 }
 
 private fun Context.getProxyPref(key: String, default: String): String {
@@ -1121,11 +1183,11 @@ private fun Context.getProxyPref(key: String, default: Boolean): Boolean {
 }
 
 private fun Context.saveProxyPref(key: String, value: String) {
-    getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).edit().putString(key, value).apply()
+    getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).edit { putString(key, value) }
 }
 
 private fun Context.saveProxyPref(key: String, value: Boolean) {
-    getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).edit().putBoolean(key, value).apply()
+    getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).edit { putBoolean(key, value) }
 }
 
 private fun Context.copyToClipboard(text: String) {
@@ -1166,14 +1228,12 @@ private fun Context.notifyRequiredUpdate(update: UpdateInfo, text: UiStrings) {
     }
 
     val notificationManager = getSystemService(NotificationManager::class.java)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        val channel = NotificationChannel(
-            UPDATE_CHANNEL_ID,
-            "Updates",
-            NotificationManager.IMPORTANCE_HIGH,
-        )
-        notificationManager.createNotificationChannel(channel)
-    }
+    val channel = NotificationChannel(
+        UPDATE_CHANNEL_ID,
+        "Updates",
+        NotificationManager.IMPORTANCE_HIGH,
+    )
+    notificationManager.createNotificationChannel(channel)
 
     val pendingIntent = PendingIntent.getActivity(
         this,

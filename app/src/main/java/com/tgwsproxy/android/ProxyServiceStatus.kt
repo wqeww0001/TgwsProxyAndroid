@@ -2,6 +2,7 @@ package com.tgwsproxy.android
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.Locale
 
 object ProxyServiceStatus {
     private val _isRunning = AtomicBoolean(false)
@@ -10,10 +11,7 @@ object ProxyServiceStatus {
 
     var isRunning: Boolean
         get() = _isRunning.get()
-        set(value) {
-            _isRunning.set(value)
-            println("ProxyServiceStatus.isRunning = $value") // Для отладки
-        }
+        set(value) = _isRunning.set(value)
 
     var startTime: Long
         get() = _startTime.get()
@@ -35,10 +33,10 @@ object ProxyServiceStatus {
         val minutes = (millis / (1000 * 60)) % 60
         val hours = (millis / (1000 * 60 * 60)) % 24
         return when {
-            days > 0 -> String.format("%dd %02d:%02d:%02d", days, hours, minutes, seconds)
-            hours > 0 -> String.format("%02d:%02d:%02d", hours, minutes, seconds)
-            minutes > 0 -> String.format("%02d:%02d", minutes, seconds)
-            else -> String.format("%02d sec", seconds)
+            days > 0 -> String.format(Locale.ROOT, "%dd %02d:%02d:%02d", days, hours, minutes, seconds)
+            hours > 0 -> String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, seconds)
+            minutes > 0 -> String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
+            else -> String.format(Locale.ROOT, "%02d sec", seconds)
         }
     }
 }

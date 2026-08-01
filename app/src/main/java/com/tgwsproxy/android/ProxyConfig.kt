@@ -13,6 +13,10 @@ object ProxyConfig {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
+    fun isValidSecret(value: String): Boolean {
+        return value.length == 32 && value.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+    }
+
     fun telegramProxyLink(secret: String, fakeTlsDomain: String = ""): String {
         val cleanDomain = fakeTlsDomain.trim()
         val proxySecret = if (cleanDomain.isBlank()) {
@@ -27,6 +31,24 @@ object ProxyConfig {
         return value.trim()
             .removePrefix("https://")
             .removePrefix("http://")
+            .substringBefore('/')
+            .substringBefore(':')
             .trim('/')
+            .trimEnd('.')
+            .lowercase()
+    }
+
+    fun normalizeDomain(value: String): String {
+        val domain = cleanDomain(value)
+        if (domain.isBlank()) return ""
+        return domain.takeIf {
+            it.length <= 253 &&
+                it.contains('.') &&
+                it.split('.').all { label ->
+                    label.isNotEmpty() && label.length <= 63 &&
+                        label.first().isLetterOrDigit() && label.last().isLetterOrDigit() &&
+                        label.all { char -> char.isLetterOrDigit() || char == '-' }
+                }
+        }.orEmpty()
     }
 }

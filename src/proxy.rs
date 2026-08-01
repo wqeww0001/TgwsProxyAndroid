@@ -561,7 +561,9 @@ pub async fn tcp_fallback(
         };
     let _ = remote.set_nodelay(true);
 
-    STATS.connections_tcp_fallback.fetch_add(1, Ordering::Relaxed);
+    STATS
+        .connections_tcp_fallback
+        .fetch_add(1, Ordering::Relaxed);
     linfo!(" DC{}{} подключен по TCP", dc, media_tag(is_media));
     if remote.write_all(init).await.is_err() {
         return false;
@@ -665,7 +667,12 @@ async fn cfproxy_acquire_ws(
     }
 
     let m_tag = media_tag(is_media);
-    ldebug!(" CF fallback DC{}{}: {} домен(ов)", dc, m_tag, ordered.len());
+    ldebug!(
+        " CF fallback DC{}{}: {} домен(ов)",
+        dc,
+        m_tag,
+        ordered.len()
+    );
 
     let mut ws: Option<RawWebSocket> = None;
     let mut chosen_domain = String::new();
@@ -751,9 +758,7 @@ pub async fn do_fallback(
 
     if use_cf {
         // Сначала добываем WS через CF, conn не трогаем.
-        if let Some((ws, chosen_domain)) =
-            cfproxy_acquire_ws(dc, is_media, &cancel_token).await
-        {
+        if let Some((ws, chosen_domain)) = cfproxy_acquire_ws(dc, is_media, &cancel_token).await {
             STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
             linfo!(" DC{}{} подключен через CF", dc, media_tag(is_media));
 
@@ -826,7 +831,11 @@ pub async fn do_fallback(
 // Client handler (dd-only)
 // ---------------------------------------------------------------------------
 
-pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token: CancellationToken) {
+pub async fn handle_client(
+    pool: Arc<WsPool>,
+    mut conn: TcpStream,
+    cancel_token: CancellationToken,
+) {
     STATS.connections_total.fetch_add(1, Ordering::Relaxed);
     STATS.connections_active.fetch_add(1, Ordering::Relaxed);
     struct ActiveGuard;
@@ -858,7 +867,9 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     }
 
     if is_http_transport(&handshake) {
-        STATS.connections_http_reject.fetch_add(1, Ordering::Relaxed);
+        STATS
+            .connections_http_reject
+            .fetch_add(1, Ordering::Relaxed);
         let _ = conn
             .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
             .await;
@@ -991,15 +1002,21 @@ pub async fn handle_client(pool: Arc<WsPool>, mut conn: TcpStream, cancel_token:
     };
 
     let domains = ws_domains(dc, is_media);
-    let (mut ws_opt, ws_failed_redirect, all_redirects) =
-        if let Some(w) = pool.get(dc, is_media, target.clone(), domains.clone()).await {
-            (Some(w), false, false)
-        } else {
-            connect_direct_ws(&target, &domains, ws_timeout).await
-        };
+    let (mut ws_opt, ws_failed_redirect, all_redirects) = if let Some(w) = pool
+        .get(dc, is_media, target.clone(), domains.clone())
+        .await
+    {
+        (Some(w), false, false)
+    } else {
+        connect_direct_ws(&target, &domains, ws_timeout).await
+    };
 
     if ws_opt.is_none() {
-        lwarn!(" DC{}{}: все попытки WS провалены (DPI/Интернет)", dc, m_tag);
+        lwarn!(
+            " DC{}{}: все попытки WS провалены (DPI/Интернет)",
+            dc,
+            m_tag
+        );
         if ws_failed_redirect && all_redirects {
             WS_BLACKLIST.write().insert(dc_key, true);
             lwarn!(" DC{}{} заблокирован (302)", dc, m_tag);

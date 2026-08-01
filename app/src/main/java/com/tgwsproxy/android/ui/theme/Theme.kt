@@ -4,27 +4,31 @@ import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Pine80,
-    secondary = Mist80,
-    tertiary = Amber80,
+    primary = SignalCyan,
+    secondary = SignalBlue,
+    tertiary = SignalMint,
     background = DeepNight,
     surface = NightPanel,
     surfaceVariant = NightPanelAlt,
     outline = NightLine,
-    onSurface = androidx.compose.ui.graphics.Color(0xFFEAF6FA),
-    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF9EB4C1),
-    primaryContainer = androidx.compose.ui.graphics.Color(0xFF183529),
-    onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFFE6FFF4),
-    secondaryContainer = androidx.compose.ui.graphics.Color(0xFF243039),
-    onSecondaryContainer = androidx.compose.ui.graphics.Color(0xFFE9F1F5),
+    onSurface = NightText,
+    onSurfaceVariant = NightMuted,
+    primaryContainer = androidx.compose.ui.graphics.Color(0xFF103545),
+    onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFFDDF9FF),
+    secondaryContainer = androidx.compose.ui.graphics.Color(0xFF252D5A),
+    onSecondaryContainer = androidx.compose.ui.graphics.Color(0xFFE8EBFF),
+    error = androidx.compose.ui.graphics.Color(0xFFFF7D8D),
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -36,6 +40,14 @@ private val LightColorScheme = lightColorScheme(
     surfaceVariant = androidx.compose.ui.graphics.Color(0xFFE4F1F2),
     onSurface = androidx.compose.ui.graphics.Color(0xFF15282C),
     onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF546B71),
+)
+
+private val AppShapes = Shapes(
+    extraSmall = RoundedCornerShape(10.dp),
+    small = RoundedCornerShape(14.dp),
+    medium = RoundedCornerShape(20.dp),
+    large = RoundedCornerShape(28.dp),
+    extraLarge = RoundedCornerShape(36.dp),
 )
 
 @Composable
@@ -57,6 +69,7 @@ fun TgwsProxyAndroidTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = AppShapes,
         content = content
     )
 }
