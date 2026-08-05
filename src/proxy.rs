@@ -1193,6 +1193,7 @@ pub async fn run_proxy(
     linfo!("  TG WS Proxy запущен");
     linfo!("  Адрес: {}:{}", host, port);
 
+    let connection_limit = Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_CONNECTIONS));
     let cancel_stats = cancel_root.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -1215,9 +1216,19 @@ pub async fn run_proxy(
             accept = listener.accept() => {
                 match accept {
                     Ok((conn, _)) => {
+                        let permit = match connection_limit.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                STATS.connections_bad.fetch_add(1, Ordering::Relaxed);
+                                lwarn!(" connection limit reached ({})", MAX_ACTIVE_CONNECTIONS);
+                                drop(conn);
+                                continue;
+                            }
+                        };
                         let p = pool.clone();
                         let cancel = cancel_root.child_token();
                         tokio::spawn(async move {
+                            let _permit = permit;
                             handle_client(p, conn, cancel).await;
                         });
                     }

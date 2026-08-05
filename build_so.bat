@@ -35,15 +35,15 @@ set "NDK_HOME=%ANDROID_NDK_HOME%"
 :NdkReady
 
 where cargo >nul 2>nul
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo Error: cargo not found in PATH
     exit /b 1
 )
 where cargo-ndk >nul 2>nul
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo Installing cargo-ndk...
     cargo install cargo-ndk
-    if %errorlevel% neq 0 (
+    if errorlevel 1 (
         echo Error: failed to install cargo-ndk
         exit /b 1
     )
@@ -66,7 +66,7 @@ cargo ndk ^
   -o "%ROOT_DIR%app\src\main\jniLibs" ^
   build --release
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo BUILD FAILED for arm64-v8a!
     exit /b 1
 )
@@ -79,7 +79,7 @@ cargo ndk ^
   -o "%ROOT_DIR%app\src\main\jniLibs" ^
   build --release
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo BUILD FAILED for armeabi-v7a!
     exit /b 1
 )
@@ -92,7 +92,7 @@ cargo ndk ^
   -o "%ROOT_DIR%app\src\main\jniLibs" ^
   build --release
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo BUILD FAILED for x86_64!
     exit /b 1
 )

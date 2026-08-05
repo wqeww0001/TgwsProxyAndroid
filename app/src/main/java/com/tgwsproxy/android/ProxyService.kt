@@ -7,10 +7,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.edit
 import com.tgwsproxy.android.proxy.ProxyLogger
 import kotlinx.coroutines.CompletableDeferred
@@ -29,6 +31,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class ProxyService : Service() {
     private val nativeRunning = AtomicBoolean(false)
+    private val nativeInitializing = AtomicBoolean(false)
+    private val destroyed = AtomicBoolean(false)
+    private val nativeCallLock = Any()
     private var wakeLock: PowerManager.WakeLock? = null
     private var wakeLockAcquiredAtMs: Long = 0
     private var startTime: Long = 0
@@ -51,13 +56,7 @@ class ProxyService : Service() {
         }
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val secret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf(ProxyConfig::isValidSecret)
-            ?.also { SecureSecretStore.save(this, it) }
-            ?: SecureSecretStore.load(this).orEmpty()
-        if (secret.isBlank()) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        val providedSecret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf(ProxyConfig::isValidSecret)
 
         val cfDomain = normalizeNativeCfDomain(
             intent?.getStringExtra(EXTRA_CF_WORKER_DOMAIN)
@@ -75,10 +74,14 @@ class ProxyService : Service() {
             putBoolean(EXTRA_CF_ENABLED, true)
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("starting"))
+        if (startTime == 0L) startTime = System.currentTimeMillis()
+        if (!promoteToForeground()) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
 
-        if (!nativeRunning.get()) {
-            startNativeProxy(secret, cfDomain)
+        if (!nativeRunning.get() && nativeInitializing.compareAndSet(false, true)) {
+            resolveSecretAndStart(providedSecret, cfDomain, startId)
         }
 
         return START_STICKY
@@ -87,6 +90,7 @@ class ProxyService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        destroyed.set(true)
         statsJob?.cancel()
         watchdogJob?.cancel()
         stopNativeProxy()
@@ -94,33 +98,83 @@ class ProxyService : Service() {
         ProxyServiceStatus.isRunning = false
         ProxyServiceStatus.startTime = 0
         ProxyServiceStatus.lastPing = -1
+        AppDiagnostics.setProcessState(this, "proxy=stopped")
         serviceScope.cancel()
         super.onDestroy()
     }
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        ProxyLogger.e("Foreground service timed out: type=$fgsType startId=$startId")
+        stopNativeProxy()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelfResult(startId)
+    }
+
+    private fun promoteToForeground(): Boolean {
+        return runCatching {
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            } else {
+                0
+            }
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification("starting"), type)
+            true
+        }.getOrElse {
+            ProxyLogger.e("Unable to promote proxy service to foreground", it)
+            false
+        }
+    }
+
+    private fun resolveSecretAndStart(providedSecret: String?, cfDomain: String, startId: Int) {
+        Thread({
+            try {
+                val secret = providedSecret ?: SecureSecretStore.load(this).orEmpty()
+                if (providedSecret != null) SecureSecretStore.save(this, providedSecret)
+                if (secret.isBlank() || destroyed.get()) {
+                    nativeInitializing.set(false)
+                    if (secret.isBlank()) ProxyLogger.e("Proxy cannot start: no valid secret is available")
+                    stopSelfResult(startId)
+                    return@Thread
+                }
+                startNativeProxy(secret, cfDomain)
+            } catch (t: Throwable) {
+                nativeInitializing.set(false)
+                ProxyLogger.e("Proxy initialization failed", t)
+                stopSelfResult(startId)
+            }
+        }, "tgws-service-init").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
     private fun startNativeProxy(secret: String, cfDomain: String) {
         nativeRunning.set(true)
+        nativeInitializing.set(false)
         serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         startTime = System.currentTimeMillis()
         lastPing = -1
         ProxyServiceStatus.isRunning = true
         ProxyServiceStatus.startTime = startTime
         ProxyServiceStatus.lastPing = lastPing
+        AppDiagnostics.setProcessState(this, "proxy=starting")
         ProxyLogger.i("Starting Rust/Tokio proxy core")
         acquireWakeLock()
 
         Thread({
             try {
-                NativeProxy.setPoolSize(DEFAULT_POOL_SIZE)
-                NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
-                NativeProxy.setCfProxyConfig(enabled = true, priority = true, userDomain = cfDomain)
-                val result = NativeProxy.startProxy(
-                    host = ProxyConfig.HOST,
-                    port = ProxyConfig.PORT,
-                    dcIps = "",
-                    secret = secret,
-                    verbose = true,
-                )
+                val result = synchronized(nativeCallLock) {
+                    NativeProxy.setPoolSize(DEFAULT_POOL_SIZE)
+                    NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
+                    NativeProxy.setCfProxyConfig(enabled = true, priority = true, userDomain = cfDomain)
+                    NativeProxy.startProxy(
+                        host = ProxyConfig.HOST,
+                        port = ProxyConfig.PORT,
+                        dcIps = "",
+                        secret = secret,
+                        verbose = true,
+                    )
+                }
                 if (result != 0) {
                     ProxyLogger.e("Rust core failed to start: code $result")
                     nativeRunning.set(false)
@@ -128,6 +182,7 @@ class ProxyService : Service() {
                     stopSelf()
                 } else {
                     ProxyLogger.i("Rust core started on ${ProxyConfig.HOST}:${ProxyConfig.PORT}")
+                    AppDiagnostics.setProcessState(this, "proxy=running")
                 }
             } catch (t: Throwable) {
                 ProxyLogger.e("Rust core startup crashed", t)
@@ -172,7 +227,9 @@ class ProxyService : Service() {
                 val online = isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 700)
                 lastPing = if (online) 0 else -1
                 ProxyServiceStatus.lastPing = lastPing
-                val stats = runCatching { NativeProxy.getStats().orEmpty() }.getOrDefault("")
+                val stats = runCatching {
+                    synchronized(nativeCallLock) { NativeProxy.getStats().orEmpty() }
+                }.getOrDefault("")
                 if (stats.isNotBlank()) {
                     ProxyLogger.d("Rust stats: $stats")
                 }
@@ -187,7 +244,7 @@ class ProxyService : Service() {
         val completed = CompletableDeferred<Unit>()
         Thread({
             try {
-                NativeProxy.stopProxy()
+                synchronized(nativeCallLock) { NativeProxy.stopProxy() }
             } catch (t: Throwable) {
                 ProxyLogger.w("Rust core stop failed", t)
             } finally {
@@ -265,7 +322,9 @@ class ProxyService : Service() {
         if (!force && now - lastNotificationAtMs < NOTIFICATION_MIN_UPDATE_MS) return
         lastNotificationContent = content
         lastNotificationAtMs = now
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(content))
+        runCatching {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(content))
+        }.onFailure { ProxyLogger.w("Foreground notification update failed", it) }
     }
 
     private fun buildNotification(content: String): Notification {

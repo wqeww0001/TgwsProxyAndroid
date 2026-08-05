@@ -309,8 +309,7 @@ impl RawWebSocket {
             reader.read_exact(&mut mask_key).await?;
         }
 
-        const MAX_FRAME_PAYLOAD: u64 = 16 * 1024 * 1024;
-        if length > MAX_FRAME_PAYLOAD {
+        if length > MAX_WS_FRAME_PAYLOAD {
             return Err(WsError::Other(format!("frame too large: {} bytes", length)));
         }
         let mut payload = vec![0u8; length as usize];
@@ -351,8 +350,7 @@ async fn read_frame_locked(
         reader.read_exact(&mut mask_key).await?;
     }
 
-    const MAX_FRAME_PAYLOAD: u64 = 16 * 1024 * 1024;
-    if length > MAX_FRAME_PAYLOAD {
+    if length > MAX_WS_FRAME_PAYLOAD {
         return Err(WsError::Other(format!("frame too large: {} bytes", length)));
     }
     let mut payload = vec![0u8; length as usize];

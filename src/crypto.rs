@@ -1,4 +1,4 @@
-use crate::config::ZERO64;
+use crate::config::{MAX_SPLITTER_BUFFER, ZERO64};
 use aes::cipher::{KeyIvInit, StreamCipher};
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 
@@ -104,6 +104,14 @@ impl MsgSplitter {
         }
         if self.disabled {
             return vec![chunk.to_vec()];
+        }
+
+        if self.cipher_buf.len().saturating_add(chunk.len()) > MAX_SPLITTER_BUFFER {
+            let mut passthrough = std::mem::take(&mut self.cipher_buf);
+            passthrough.extend_from_slice(chunk);
+            self.plain_buf.clear();
+            self.disabled = true;
+            return vec![passthrough];
         }
 
         self.cipher_buf.extend_from_slice(chunk);
@@ -238,4 +246,35 @@ pub fn write_be_u16(buf: &mut [u8], v: u16) {
 #[allow(dead_code)]
 pub fn write_be_u64(buf: &mut [u8], v: u64) {
     BigEndian::write_u64(buf, v);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splitter_disables_parsing_before_buffer_can_grow_without_bound() {
+        let init = [0u8; 64];
+        let mut splitter = MsgSplitter::new(&init, 0xEEEEEEEE).expect("splitter");
+
+        let first_len = MAX_SPLITTER_BUFFER / 2 + 1;
+        let mut plaintext = vec![0u8; first_len];
+        LittleEndian::write_u32(&mut plaintext[..4], (MAX_SPLITTER_BUFFER - 4) as u32);
+
+        let mut encryptor = Aes256Ctr::new(init[8..40].into(), init[40..56].into());
+        let mut skip = [0u8; 64];
+        encryptor.apply_keystream(&mut skip);
+        let mut ciphertext = plaintext;
+        encryptor.apply_keystream(&mut ciphertext);
+
+        assert!(splitter.split(&ciphertext).is_empty());
+        let overflow = vec![0x55; first_len];
+        let parts = splitter.split(&overflow);
+
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), first_len * 2);
+        assert!(splitter.disabled);
+        assert!(splitter.cipher_buf.is_empty());
+        assert!(splitter.plain_buf.is_empty());
+    }
 }

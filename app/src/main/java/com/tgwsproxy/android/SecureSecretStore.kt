@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
+import com.tgwsproxy.android.proxy.ProxyLogger
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -13,6 +14,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** Stores the MTProto secret encrypted with a non-exportable Android Keystore key. */
 object SecureSecretStore {
+    private val lock = Any()
     private const val KEY_ALIAS = "tgwsproxy.secret.v1"
     private const val SECURE_PREFS = "secure_proxy"
     private const val ENCRYPTED_SECRET = "secret_aes_gcm"
@@ -21,19 +23,28 @@ object SecureSecretStore {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
 
     fun getOrCreate(context: Context): String {
-        load(context)?.let { return it }
+        return synchronized(lock) {
+            load(context)?.let { return@synchronized it }
 
-        val legacy = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
-            .getString(LEGACY_SECRET, null)
-            ?.takeIf(ProxyConfig::isValidSecret)
-        val secret = legacy ?: ProxyConfig.generateSecret()
-        save(context, secret)
-        context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
-            .edit { remove(LEGACY_SECRET) }
-        return secret
+            val legacy = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
+                .getString(LEGACY_SECRET, null)
+                ?.takeIf(ProxyConfig::isValidSecret)
+            val secret = legacy ?: ProxyConfig.generateSecret()
+            if (save(context, secret)) {
+                context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
+                    .edit { remove(LEGACY_SECRET) }
+            } else {
+                ProxyLogger.w("Secret is available for this process but could not be persisted securely")
+            }
+            secret
+        }
     }
 
     fun load(context: Context): String? {
+        return synchronized(lock) { loadLocked(context) }
+    }
+
+    private fun loadLocked(context: Context): String? {
         val encoded = context.getSharedPreferences(SECURE_PREFS, Context.MODE_PRIVATE)
             .getString(ENCRYPTED_SECRET, null)
             ?: return null
@@ -46,11 +57,27 @@ object SecureSecretStore {
                 init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
             }
             String(cipher.doFinal(encrypted), Charsets.UTF_8).takeIf(ProxyConfig::isValidSecret)
+        }.onFailure {
+            ProxyLogger.w("Encrypted secret could not be read; secure storage will be repaired", it)
+            resetSecureStorage(context)
         }.getOrNull()
     }
 
-    fun save(context: Context, secret: String) {
-        require(ProxyConfig.isValidSecret(secret)) { "Invalid proxy secret" }
+    fun save(context: Context, secret: String): Boolean {
+        if (!ProxyConfig.isValidSecret(secret)) return false
+        return synchronized(lock) {
+            runCatching { encryptAndPersist(context, secret) }
+                .recoverCatching {
+                    ProxyLogger.w("Secure secret write failed; recreating Android Keystore entry", it)
+                    resetSecureStorage(context)
+                    encryptAndPersist(context, secret)
+                }
+                .onFailure { ProxyLogger.e("Secure secret write failed after recovery", it) }
+                .isSuccess
+        }
+    }
+
+    private fun encryptAndPersist(context: Context, secret: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         }
@@ -58,6 +85,14 @@ object SecureSecretStore {
         val payload = cipher.iv + encrypted
         context.getSharedPreferences(SECURE_PREFS, Context.MODE_PRIVATE)
             .edit { putString(ENCRYPTED_SECRET, Base64.encodeToString(payload, Base64.NO_WRAP)) }
+    }
+
+    private fun resetSecureStorage(context: Context) {
+        runCatching {
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(KEY_ALIAS)
+        }
+        context.getSharedPreferences(SECURE_PREFS, Context.MODE_PRIVATE)
+            .edit { remove(ENCRYPTED_SECRET) }
     }
 
     private fun getOrCreateKey(): SecretKey {

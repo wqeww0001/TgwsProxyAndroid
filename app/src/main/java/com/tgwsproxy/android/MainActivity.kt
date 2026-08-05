@@ -1,6 +1,7 @@
 ﻿package com.tgwsproxy.android
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -13,7 +14,9 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.MediaStore
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -68,7 +71,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -96,7 +98,6 @@ import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.ui.theme.TgwsProxyAndroidTheme
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -201,6 +202,10 @@ private data class UiStrings(
     val autoUpdates: String,
     val autoUpdatesEnabled: String,
     val autoUpdatesWarning: String,
+    val batteryProtection: String,
+    val batteryRestricted: String,
+    val batteryUnrestricted: String,
+    val allowBackgroundWork: String,
     val disableAnyway: String,
     val keepEnabled: String,
     val updateInterval: String,
@@ -255,6 +260,10 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         autoUpdates = "Автообновления",
         autoUpdatesEnabled = "Автопроверка включена",
         autoUpdatesWarning = "Отключать автообновления не стоит: через них приходят обязательные исправления прокси и безопасности. Но если нужно, отключить можно.",
+        batteryProtection = "Работа в фоне",
+        batteryRestricted = "Система может принудительно закрыть прокси",
+        batteryUnrestricted = "Ограничения батареи отключены",
+        allowBackgroundWork = "Разрешить постоянную работу",
         disableAnyway = "Отключить",
         keepEnabled = "Оставить",
         updateInterval = "Интервал проверки",
@@ -307,6 +316,10 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         autoUpdates = "Auto updates",
         autoUpdatesEnabled = "Auto check enabled",
         autoUpdatesWarning = "Disabling auto updates is not recommended: required proxy and security fixes arrive through them. You can still disable it.",
+        batteryProtection = "Background operation",
+        batteryRestricted = "The system may force-stop the proxy",
+        batteryUnrestricted = "Battery restrictions are disabled",
+        allowBackgroundWork = "Allow continuous operation",
         disableAnyway = "Disable",
         keepEnabled = "Keep enabled",
         updateInterval = "Check interval",
@@ -329,7 +342,7 @@ fun ProxyScreen() {
     val text = strings(language)
     var proxyStatus by remember { mutableStateOf(ProxyStatus()) }
     var logLines by remember { mutableStateOf(emptyList<String>()) }
-    val secret = rememberSaveable { context.getOrCreateProxySecret() }
+    var secret by remember { mutableStateOf("") }
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
     var updateMessage by remember(language) { mutableStateOf("${text.currentVersion}: ${UpdateChecker.currentVersion(context)}") }
@@ -339,78 +352,67 @@ fun ProxyScreen() {
     var autoUpdateMinutes by rememberSaveable { mutableIntStateOf(context.getProxyPref(AUTO_UPDATE_INTERVAL_PREF, DEFAULT_AUTO_UPDATE_MINUTES.toString()).toIntOrNull()?.coerceIn(15, 24 * 60) ?: DEFAULT_AUTO_UPDATE_MINUTES) }
     var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
     var showSplash by rememberSaveable { mutableStateOf(true) }
+    var batteryUnrestricted by remember { mutableStateOf(context.isIgnoringBatteryOptimizations()) }
     val link = remember(secret, fakeTlsDomain) { ProxyConfig.telegramProxyLink(secret, ProxyConfig.normalizeDomain(fakeTlsDomain)) }
 
     fun runUpdateCheck(manual: Boolean) {
         if (updateBusy) return
         updateBusy = true
         if (manual) updateMessage = if (requiredUpdate != null) text.downloadingRequiredUpdate else text.checkingGithub
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             val result = runCatching {
                 val current = UpdateChecker.currentVersion(context)
-                val update = requiredUpdate ?: UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
+                val update = requiredUpdate ?: withContext(Dispatchers.IO) {
+                    UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
+                }
                 if (update == null) {
                     "${text.noUpdateFound}: $current"
                 } else {
-                    withContext(Dispatchers.Main) {
-                        requiredUpdate = update
-                        context.stopService(Intent(context, ProxyService::class.java))
-                        proxyStatus = ProxyStatus(false)
-                        context.notifyRequiredUpdate(update, text)
-                    }
+                    requiredUpdate = update
+                    context.stopService(Intent(context, ProxyService::class.java))
+                    proxyStatus = ProxyStatus(false)
+                    context.notifyRequiredUpdate(update, text)
                     if (manual) {
-                        withContext(Dispatchers.Main) { updateMessage = "${text.downloading} ${update.version}..." }
-                        val apk = UpdateChecker.downloadApk(context, update)
-                        withContext(Dispatchers.Main) { UpdateChecker.installApk(context, apk) }
+                        updateMessage = "${text.downloading} ${update.version}..."
+                        val apk = withContext(Dispatchers.IO) { UpdateChecker.downloadApk(context, update) }
+                        UpdateChecker.installApk(context, apk)
                         "${text.installerOpened} ${update.version}"
                     } else {
                         "${text.requiredUpdate} ${update.version}. ${text.installToContinue}"
                     }
                 }
             }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
-            withContext(Dispatchers.Main) {
-                updateMessage = result
-                updateBusy = false
-            }
+            updateMessage = result
+            updateBusy = false
         }
     }
 
     LaunchedEffect(Unit) {
+        secret = withContext(Dispatchers.IO) { context.getOrCreateProxySecret() }
         delay(1200)
         showSplash = false
     }
 
-    DisposableEffect(Unit) {
-        val scope = CoroutineScope(Dispatchers.IO)
-        val job = scope.launch {
-            while (isActive) {
-                val running = ProxyServiceStatus.isRunning
-                val next = if (running) {
-                    ProxyStatus(true, ProxyServiceStatus.getUptime(), ProxyServiceStatus.lastPing)
-                } else {
-                    ProxyStatus(false)
-                }
-                val logs = ProxyLogger.snapshot().takeLast(120)
-                withContext(Dispatchers.Main) {
-                    proxyStatus = next
-                    logLines = logs
-                }
-                delay(1000)
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            val running = ProxyServiceStatus.isRunning
+            proxyStatus = if (running) {
+                ProxyStatus(true, ProxyServiceStatus.getUptime(), ProxyServiceStatus.lastPing)
+            } else {
+                ProxyStatus(false)
             }
+            logLines = withContext(Dispatchers.IO) { ProxyLogger.snapshot().takeLast(120) }
+            batteryUnrestricted = context.isIgnoringBatteryOptimizations()
+            delay(1000)
         }
-        onDispose { job.cancel() }
     }
 
-    DisposableEffect(autoUpdateEnabled, autoUpdateMinutes, language) {
-        val scope = CoroutineScope(Dispatchers.IO)
-        val job = scope.launch {
-            if (!autoUpdateEnabled) return@launch
-            while (isActive) {
-                withContext(Dispatchers.Main) { runUpdateCheck(manual = false) }
-                delay(autoUpdateMinutes * 60_000L)
-            }
+    LaunchedEffect(autoUpdateEnabled, autoUpdateMinutes, language) {
+        if (!autoUpdateEnabled) return@LaunchedEffect
+        while (isActive) {
+            runUpdateCheck(manual = false)
+            delay(autoUpdateMinutes * 60_000L)
         }
-        onDispose { job.cancel() }
     }
 
     if (showDisableAutoUpdateWarning) {
@@ -435,7 +437,7 @@ fun ProxyScreen() {
         )
     }
 
-    if (showSplash) {
+    if (showSplash || secret.isBlank()) {
         SplashScreen(text)
         return
     }
@@ -495,8 +497,10 @@ fun ProxyScreen() {
                         text = text,
                         logs = logLines,
                         onDownload = {
-                            val result = context.saveLogsToDownloads()
-                            Toast.makeText(context, if (result) text.logsSaved else text.logsSaveFailed, Toast.LENGTH_SHORT).show()
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) { context.saveLogsToDownloads() }
+                                Toast.makeText(context, if (result) text.logsSaved else text.logsSaveFailed, Toast.LENGTH_SHORT).show()
+                            }
                         },
                     )
                     AppTab.Settings -> SettingsPage(
@@ -522,6 +526,8 @@ fun ProxyScreen() {
                         requiredUpdate = requiredUpdate != null,
                         autoUpdateEnabled = autoUpdateEnabled,
                         autoUpdateMinutes = autoUpdateMinutes,
+                        batteryUnrestricted = batteryUnrestricted,
+                        onBatterySettings = { context.requestBatteryOptimizationExemption() },
                         onAutoUpdateEnabledChange = { enabled ->
                             if (!enabled) {
                                 showDisableAutoUpdateWarning = true
@@ -662,6 +668,8 @@ private fun SettingsPage(
     requiredUpdate: Boolean,
     autoUpdateEnabled: Boolean,
     autoUpdateMinutes: Int,
+    batteryUnrestricted: Boolean,
+    onBatterySettings: () -> Unit,
     onAutoUpdateEnabledChange: (Boolean) -> Unit,
     onAutoUpdateMinutesChange: (Int) -> Unit,
     onCheckUpdate: () -> Unit,
@@ -683,6 +691,7 @@ private fun SettingsPage(
         onEnabledChange = onAutoUpdateEnabledChange,
         onMinutesChange = onAutoUpdateMinutesChange,
     )
+    BatteryOptimizationCard(text, batteryUnrestricted, onBatterySettings)
     UpdateCard(
         text = text,
         message = updateMessage,
@@ -690,6 +699,29 @@ private fun SettingsPage(
         required = requiredUpdate,
         onCheck = onCheckUpdate,
     )
+}
+
+@Composable
+private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOpenSettings: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(text.batteryProtection, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (unrestricted) text.batteryUnrestricted else text.batteryRestricted,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (unrestricted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            )
+            if (!unrestricted) {
+                FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = onOpenSettings) {
+                    ButtonText(text.allowBackgroundWork)
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1157,17 +1189,45 @@ private fun getPingColor(ping: Long): Color = when {
 private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfWorkerDomain: String) {
     val cleanFakeTlsDomain = ProxyConfig.normalizeDomain(fakeTlsDomain)
     val cleanWorkerDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
-    SecureSecretStore.save(this, secret)
     saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, true)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     val intent = Intent(this, ProxyService::class.java)
+        .putExtra(ProxyService.EXTRA_SECRET, secret)
         .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, true)
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     ContextCompat.startForegroundService(this, intent)
+}
+
+private fun Context.isIgnoringBatteryOptimizations(): Boolean {
+    return runCatching {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        powerManager.isIgnoringBatteryOptimizations(packageName)
+    }.getOrDefault(false)
+}
+
+@SuppressLint("BatteryLife") // The user explicitly opts a persistent proxy out of Doze.
+private fun Context.requestBatteryOptimizationExemption() {
+    if (isIgnoringBatteryOptimizations()) return
+    val packageUri = "package:$packageName".toUri()
+    val directRequest = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { startActivity(directRequest) }.recoverCatching {
+        startActivity(
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }.onFailure { firstError ->
+        runCatching {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure { ProxyLogger.w("Unable to open battery settings", firstError) }
+    }
 }
 
 private fun Context.getOrCreateProxySecret(): String {

@@ -39,5 +39,5 @@ log = "0.4"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 strip = true

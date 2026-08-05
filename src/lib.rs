@@ -11,6 +11,7 @@ use proxy::{parse_cidr_pool, run_proxy, WsPool};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -50,6 +51,16 @@ fn cstr_to_string(p: *const c_char) -> String {
     unsafe { CStr::from_ptr(p).to_string_lossy().into_owned() }
 }
 
+fn ffi_guard<T>(name: &str, fallback: T, action: impl FnOnce() -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(action)) {
+        Ok(value) => value,
+        Err(_) => {
+            lerror!("panic contained at FFI boundary: {}", name);
+            fallback
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -58,6 +69,18 @@ fn cstr_to_string(p: *const c_char) -> String {
 /// Указатели должны быть валидными C-строками (или null).
 #[no_mangle]
 pub unsafe extern "C" fn StartProxy(
+    c_host: *const c_char,
+    port: c_int,
+    c_dc_ips: *const c_char,
+    c_secret: *const c_char,
+    verbose: c_int,
+) -> c_int {
+    ffi_guard("StartProxy", -100, || unsafe {
+        start_proxy_impl(c_host, port, c_dc_ips, c_secret, verbose)
+    })
+}
+
+unsafe fn start_proxy_impl(
     c_host: *const c_char,
     port: c_int,
     c_dc_ips: *const c_char,
@@ -151,6 +174,10 @@ pub unsafe extern "C" fn StartProxy(
 
 #[no_mangle]
 pub extern "C" fn StopProxy() -> c_int {
+    ffi_guard("StopProxy", -100, stop_proxy_impl)
+}
+
+fn stop_proxy_impl() -> c_int {
     let cell = state_cell();
     let mut guard = cell.lock();
 
@@ -185,6 +212,10 @@ pub extern "C" fn StopProxy() -> c_int {
 
 #[no_mangle]
 pub extern "C" fn SetPoolSize(size: c_int) {
+    ffi_guard("SetPoolSize", (), || set_pool_size_impl(size));
+}
+
+fn set_pool_size_impl(size: c_int) {
     let mut n = size;
     if n < 2 {
         n = 2;
@@ -199,6 +230,12 @@ pub extern "C" fn SetPoolSize(size: c_int) {
 /// `c_cache_dir` — валидная C-строка или null.
 #[no_mangle]
 pub unsafe extern "C" fn SetCfProxyCacheDir(c_cache_dir: *const c_char) {
+    ffi_guard("SetCfProxyCacheDir", (), || unsafe {
+        set_cfproxy_cache_dir_impl(c_cache_dir)
+    });
+}
+
+unsafe fn set_cfproxy_cache_dir_impl(c_cache_dir: *const c_char) {
     let dir = cstr_to_string(c_cache_dir);
     CFPROXY.write().cache_dir = dir.trim().to_string();
 }
@@ -211,6 +248,12 @@ pub unsafe extern "C" fn SetCfProxyConfig(
     _priority: c_int,
     c_user_domain: *const c_char,
 ) {
+    ffi_guard("SetCfProxyConfig", (), || unsafe {
+        set_cfproxy_config_impl(enabled, _priority, c_user_domain)
+    });
+}
+
+unsafe fn set_cfproxy_config_impl(enabled: c_int, _priority: c_int, c_user_domain: *const c_char) {
     CFPROXY_ENABLED.store(enabled != 0, Ordering::Relaxed);
     let user_domain = cstr_to_string(c_user_domain);
     let mut cfg = CFPROXY.write();
@@ -225,6 +268,10 @@ pub unsafe extern "C" fn SetCfProxyConfig(
 /// `c_secret` — валидная C-строка или null.
 #[no_mangle]
 pub unsafe extern "C" fn SetSecret(c_secret: *const c_char) {
+    ffi_guard("SetSecret", (), || unsafe { set_secret_impl(c_secret) });
+}
+
+unsafe fn set_secret_impl(c_secret: *const c_char) {
     let s = cstr_to_string(c_secret);
     if s.len() != 32 {
         return;
@@ -237,24 +284,29 @@ pub unsafe extern "C" fn SetSecret(c_secret: *const c_char) {
 
 #[no_mangle]
 pub extern "C" fn GetStats() -> *mut c_char {
-    let s = STATS.summary();
-    CString::new(s).unwrap_or_default().into_raw()
+    ffi_guard("GetStats", std::ptr::null_mut(), || {
+        let s = STATS.summary();
+        CString::new(s).unwrap_or_default().into_raw()
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn GetSecretWithPrefix() -> *mut c_char {
-    let sec = PROXY_SECRET.read().clone();
-    CString::new(format!("dd{}", sec))
-        .unwrap_or_default()
-        .into_raw()
+    ffi_guard("GetSecretWithPrefix", std::ptr::null_mut(), || {
+        let sec = PROXY_SECRET.read().clone();
+        CString::new(format!("dd{}", sec))
+            .unwrap_or_default()
+            .into_raw()
+    })
 }
 
 /// # Safety
 /// `p` должен быть указателем, ранее возвращённым из этой библиотеки.
 #[no_mangle]
 pub unsafe extern "C" fn FreeString(p: *mut c_char) {
-    if p.is_null() {
-        return;
-    }
-    let _ = CString::from_raw(p);
+    ffi_guard("FreeString", (), || unsafe {
+        if !p.is_null() {
+            let _ = CString::from_raw(p);
+        }
+    });
 }
