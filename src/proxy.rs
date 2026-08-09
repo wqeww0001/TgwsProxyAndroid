@@ -100,6 +100,7 @@ struct SlotState {
 pub struct WsPool {
     slots: Mutex<HashMap<DcSlot, Arc<SlotState>>>,
     cancel_token: CancellationToken,
+    connect_limit: Arc<tokio::sync::Semaphore>,
 }
 
 impl WsPool {
@@ -107,6 +108,7 @@ impl WsPool {
         WsPool {
             slots: Mutex::new(HashMap::new()),
             cancel_token,
+            connect_limit: Arc::new(tokio::sync::Semaphore::new(WS_POOL_CONNECT_PARALLEL)),
         }
     }
 
@@ -196,10 +198,14 @@ impl WsPool {
             let target_ip = target_ip.clone();
             let domains = domains.clone();
             let cancel = self.cancel_token.clone();
+            let connect_limit = self.connect_limit.clone();
             handles.push(tokio::spawn(async move {
                 tokio::select! {
                     _ = cancel.cancelled() => None,
-                    r = connect_one_ws(&target_ip, &domains) => r,
+                    r = async {
+                        let _permit = connect_limit.acquire().await.ok()?;
+                        connect_one_ws(&target_ip, &domains).await
+                    } => r,
                 }
             }));
         }
@@ -224,6 +230,7 @@ impl WsPool {
     }
 
     pub async fn warmup(self: &Arc<Self>, dc_opt_map: &HashMap<i32, String>) {
+        let mut warmups = Vec::new();
         for (dc, target_ip) in dc_opt_map {
             if target_ip.is_empty() {
                 continue;
@@ -244,11 +251,14 @@ impl WsPool {
                     let st = state.clone();
                     let ip = target_ip.clone();
                     let doms = domains.clone();
-                    tokio::spawn(async move {
+                    warmups.push(tokio::spawn(async move {
                         pool.refill(st, ip, doms).await;
-                    });
+                    }));
                 }
             }
+        }
+        for warmup in warmups {
+            let _ = warmup.await;
         }
     }
 
@@ -659,12 +669,7 @@ async fn cfproxy_acquire_ws(
         return None;
     }
 
-    let mut ordered = vec![active.clone()];
-    for d in &domains {
-        if *d != active {
-            ordered.push(d.clone());
-        }
-    }
+    let ordered = crate::router::ordered_domains(dc, is_media, &domains, &active);
 
     let m_tag = media_tag(is_media);
     ldebug!(
@@ -679,37 +684,40 @@ async fn cfproxy_acquire_ws(
 
     if !ordered.is_empty() && !ordered[0].is_empty() {
         let (w, d) = try_cfproxy_base_domain(dc, &ordered[0]).await;
+        if w.is_some() {
+            crate::router::record_success(dc, is_media, &d);
+        } else {
+            crate::router::record_failure(dc, is_media, &ordered[0]);
+        }
         ws = w;
         chosen_domain = d;
     }
 
     if ws.is_none() && ordered.len() > 1 {
-        let remaining_domains: Vec<String> = ordered[1..].to_vec();
-        let sem = Arc::new(tokio::sync::Semaphore::new(CFPROXY_FALLBACK_PARALLEL));
-        let mut handles = Vec::new();
-        for bd in remaining_domains {
-            let sem = sem.clone();
+        let mut attempts = tokio::task::JoinSet::new();
+        for bd in ordered[1..].iter().cloned() {
             let cancel = cancel_token.clone();
-            handles.push(tokio::spawn(async move {
+            attempts.spawn(async move {
                 tokio::select! {
-                    _ = cancel.cancelled() => None,
-                    r = async {
-                        let _p = sem.acquire().await.ok()?;
-                        let (w, d) = try_cfproxy_base_domain(dc, &bd).await;
-                        w.map(|ws| (ws, d))
-                    } => r,
+                    _ = cancel.cancelled() => (bd, None),
+                    r = try_cfproxy_base_domain(dc, &bd) => {
+                        let result = r.0.map(|socket| (socket, r.1));
+                        (bd, result)
+                    },
                 }
-            }));
+            });
         }
-        for h in handles {
-            if let Ok(Some((w, d))) = h.await {
-                if ws.is_none() {
-                    ws = Some(w);
-                    chosen_domain = d;
-                } else {
-                    tokio::spawn(async move {
-                        w.close().await;
-                    });
+        while let Some(result) = attempts.join_next().await {
+            if let Ok((attempted_domain, outcome)) = result {
+                match outcome {
+                    Some((socket, domain)) => {
+                        crate::router::record_success(dc, is_media, &domain);
+                        ws = Some(socket);
+                        chosen_domain = domain;
+                        attempts.abort_all();
+                        break;
+                    }
+                    None => crate::router::record_failure(dc, is_media, &attempted_domain),
                 }
             }
         }
@@ -1181,14 +1189,6 @@ pub async fn run_proxy(
 
     start_cfproxy_refresh();
 
-    {
-        let p = pool.clone();
-        let map = dc_opt_map.clone();
-        tokio::spawn(async move {
-            p.warmup(&map).await;
-        });
-    }
-
     linfo!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     linfo!("  TG WS Proxy запущен");
     linfo!("  Адрес: {}:{}", host, port);
@@ -1250,6 +1250,11 @@ pub async fn run_proxy(
 pub fn parse_cidr_pool(cidrs_str: &str) -> HashMap<i32, String> {
     let mut result = HashMap::new();
     if cidrs_str.trim().is_empty() {
+        for dc in [2, 4] {
+            if let Some(ip) = DC_DEFAULT_IPS.get(&dc) {
+                result.insert(dc, (*ip).to_string());
+            }
+        }
         return result;
     }
     for pair in cidrs_str.split(',') {
@@ -1267,4 +1272,17 @@ pub fn parse_cidr_pool(cidrs_str: &str) -> HashMap<i32, String> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_dc_config_warms_common_telegram_routes() {
+        let routes = parse_cidr_pool("");
+        assert_eq!(routes.get(&2).map(String::as_str), Some("149.154.167.51"));
+        assert_eq!(routes.get(&4).map(String::as_str), Some("149.154.167.91"));
+        assert_eq!(routes.len(), 2);
+    }
 }

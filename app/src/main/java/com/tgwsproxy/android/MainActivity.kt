@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         requestNotificationPermission()
         requestStoragePermission()
-        setContent { TgwsProxyAndroidTheme(darkTheme = true) { ProxyScreen() } }
+        setContent { TgwsProxyAndroidTheme(darkTheme = false) { ProxyScreen() } }
     }
 
     private fun requestNotificationPermission() {
@@ -133,6 +133,7 @@ data class ProxyStatus(
     val isRunning: Boolean = false,
     val uptime: String = "00:00",
     val localPing: Long = -1,
+    val isStarting: Boolean = false,
 )
 
 private enum class AppLanguage(val code: String) {
@@ -142,8 +143,8 @@ private enum class AppLanguage(val code: String) {
 
 private enum class AppTab {
     Home,
-    Logs,
     Settings,
+    Logs,
     Help,
 }
 
@@ -175,6 +176,9 @@ private data class UiStrings(
     val emptyDdSecret: String,
     val cfWorkerDomain: String,
     val emptyDirectFallback: String,
+    val cloudflareCdn: String,
+    val wsPool: String,
+    val wsPoolHint: String,
     val updateCheck: String,
     val requiredUpdate: String,
     val working: String,
@@ -233,6 +237,9 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         emptyDdSecret = "пусто = dd secret",
         cfWorkerDomain = "Cloudflare домен",
         emptyDirectFallback = "пусто = авто CF + TCP fallback",
+        cloudflareCdn = "Cloudflare CDN",
+        wsPool = "Пул быстрых соединений",
+        wsPoolHint = "Больше соединений — ниже задержка, но выше расход батареи",
         updateCheck = "Проверка обновлений",
         requiredUpdate = "Обязательное обновление",
         working = "Работаю...",
@@ -289,6 +296,9 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         emptyDdSecret = "empty = dd secret",
         cfWorkerDomain = "Cloudflare domain",
         emptyDirectFallback = "empty = auto CF + TCP fallback",
+        cloudflareCdn = "Cloudflare CDN",
+        wsPool = "Fast connection pool",
+        wsPoolHint = "More connections reduce latency but use more battery",
         updateCheck = "Update check",
         requiredUpdate = "Required update",
         working = "Working...",
@@ -345,6 +355,12 @@ fun ProxyScreen() {
     var secret by remember { mutableStateOf("") }
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
+    var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, true)) }
+    var poolSize by rememberSaveable {
+        mutableIntStateOf(
+            context.getProxyPref(ProxyService.EXTRA_POOL_SIZE, "4").toIntOrNull()?.takeIf { it in listOf(2, 4, 6) } ?: 4,
+        )
+    }
     var updateMessage by remember(language) { mutableStateOf("${text.currentVersion}: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -399,7 +415,7 @@ fun ProxyScreen() {
             proxyStatus = if (running) {
                 ProxyStatus(true, ProxyServiceStatus.getUptime(), ProxyServiceStatus.lastPing)
             } else {
-                ProxyStatus(false)
+                ProxyStatus(isStarting = ProxyServiceStatus.isStarting)
             }
             logLines = withContext(Dispatchers.IO) { ProxyLogger.snapshot().takeLast(120) }
             batteryUnrestricted = context.isIgnoringBatteryOptimizations()
@@ -475,13 +491,13 @@ fun ProxyScreen() {
                     AppTab.Home -> HomePage(
                         text = text,
                         status = proxyStatus,
-                        secret = secret,
                         link = link,
                         logs = logLines,
+                        cfEnabled = cfEnabled,
                         requiredUpdate = requiredUpdate != null,
                         onStart = {
-                            context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain)
-                            proxyStatus = ProxyStatus(true)
+                            context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize)
+                            proxyStatus = ProxyStatus(isStarting = true)
                         },
                         onStop = {
                             context.stopService(Intent(context, ProxyService::class.java))
@@ -520,7 +536,22 @@ fun ProxyScreen() {
                             cfWorkerDomain = ProxyConfig.cleanDomain(it)
                             context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
                         },
-                        enabled = !proxyStatus.isRunning,
+                        enabled = !proxyStatus.isRunning && !proxyStatus.isStarting,
+                        cfEnabled = cfEnabled,
+                        onCfEnabledChange = {
+                            cfEnabled = it
+                            context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, it)
+                        },
+                        secret = secret,
+                        onCopySecret = {
+                            context.copyToClipboard(secret)
+                            Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
+                        },
+                        poolSize = poolSize,
+                        onPoolSizeChange = {
+                            poolSize = it
+                            context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, it.toString())
+                        },
                         updateMessage = updateMessage,
                         updateBusy = updateBusy,
                         requiredUpdate = requiredUpdate != null,
@@ -583,16 +614,16 @@ private fun BottomTabs(
 private fun tabTitle(tab: AppTab, language: AppLanguage): String {
     return when (language) {
         AppLanguage.Ru -> when (tab) {
-            AppTab.Home -> "Главная"
+            AppTab.Home -> "Прокси"
             AppTab.Logs -> "Логи"
             AppTab.Settings -> "Настройки"
-            AppTab.Help -> "Помощь"
+            AppTab.Help -> "Инфо"
         }
         AppLanguage.En -> when (tab) {
-            AppTab.Home -> "Home"
+            AppTab.Home -> "Proxy"
             AppTab.Logs -> "Logs"
             AppTab.Settings -> "Settings"
-            AppTab.Help -> "Help"
+            AppTab.Help -> "Info"
         }
     }
 }
@@ -601,9 +632,9 @@ private fun tabTitle(tab: AppTab, language: AppLanguage): String {
 private fun HomePage(
     text: UiStrings,
     status: ProxyStatus,
-    secret: String,
     link: String,
     logs: List<String>,
+    cfEnabled: Boolean,
     requiredUpdate: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -611,7 +642,19 @@ private fun HomePage(
     onOpenTelegram: () -> Unit,
 ) {
     val stats = remember(logs) { latestStats(logs) }
-    Header(status, text)
+    PageTitle(if (text.start == "Запустить") "Запуск" else "Proxy", "TG WS Proxy · 127.0.0.1:1443")
+    ProxyHeroCard(
+        text = text,
+        status = status,
+        link = link,
+        requiredUpdate = requiredUpdate,
+        stats = stats,
+        cfEnabled = cfEnabled,
+        onStart = onStart,
+        onStop = onStop,
+        onOpenTelegram = onOpenTelegram,
+        onCopyLink = onCopyLink,
+    )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile("CF", stats.cf, Modifier.weight(1f))
         StatTile("Active", stats.active, Modifier.weight(1f))
@@ -620,20 +663,6 @@ private fun HomePage(
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile("Up", stats.up, Modifier.weight(1f), compact = true)
         StatTile("Down", stats.down, Modifier.weight(1f), compact = true)
-    }
-    ControlPanel(text, status.isRunning, requiredUpdate, onStart, onStop)
-    ConnectionCard(text, secret, link, status)
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        FilledTonalButton(modifier = Modifier.weight(1f), onClick = onCopyLink) {
-            Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.size(8.dp))
-            ButtonText(text.copyTelegramLink)
-        }
-        Button(modifier = Modifier.weight(1f), onClick = onOpenTelegram) {
-            Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.size(8.dp))
-            ButtonText(text.openInTelegram)
-        }
     }
     LogsCard(text, logs.takeLast(6))
 }
@@ -663,6 +692,12 @@ private fun SettingsPage(
     cfWorkerDomain: String,
     onCfWorkerDomainChange: (String) -> Unit,
     enabled: Boolean,
+    cfEnabled: Boolean,
+    onCfEnabledChange: (Boolean) -> Unit,
+    secret: String,
+    onCopySecret: () -> Unit,
+    poolSize: Int,
+    onPoolSizeChange: (Int) -> Unit,
     updateMessage: String,
     updateBusy: Boolean,
     requiredUpdate: Boolean,
@@ -683,7 +718,12 @@ private fun SettingsPage(
         cfWorkerDomain = cfWorkerDomain,
         onCfWorkerDomainChange = onCfWorkerDomainChange,
         enabled = enabled,
+        cfEnabled = cfEnabled,
+        onCfEnabledChange = onCfEnabledChange,
+        secret = secret,
+        onCopySecret = onCopySecret,
     )
+    PoolSizeCard(text, poolSize, enabled, onPoolSizeChange)
     AutoUpdateCard(
         text = text,
         enabled = autoUpdateEnabled,
@@ -718,6 +758,37 @@ private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOp
             if (!unrestricted) {
                 FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = onOpenSettings) {
                     ButtonText(text.allowBackgroundWork)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PoolSizeCard(text: UiStrings, poolSize: Int, enabled: Boolean, onPoolSizeChange: (Int) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(text.wsPool, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(text.wsPoolHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf(2, 4, 6).forEach { size ->
+                    if (size == poolSize) {
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            enabled = enabled,
+                            onClick = { onPoolSizeChange(size) },
+                        ) { Text(size.toString()) }
+                    } else {
+                        FilledTonalButton(
+                            modifier = Modifier.weight(1f),
+                            enabled = enabled,
+                            onClick = { onPoolSizeChange(size) },
+                        ) { Text(size.toString()) }
+                    }
                 }
             }
         }
@@ -792,10 +863,14 @@ private fun HelpPage(language: AppLanguage) {
         title = if (ru) "Сеть" else "Network",
         items = if (ru) listOf(
             "Cloudflare" to "Пустое поле Cloudflare использует встроенный список доменов. Workers.dev relay больше не нужен.",
+            "Пул 2 / 4 / 6" to "4 — сбалансированный режим. 6 уменьшает задержку запуска Telegram, но держит больше готовых WSS-соединений и расходует больше батареи.",
+            "Самый низкий пинг" to "Если прямой WSS работает у оператора, отключи Cloudflare CDN. При блокировке включи его обратно.",
             "TCP fallback" to "Если Cloudflare не отвечает, ядро пробует прямой TCP fallback и не ломает клиентское соединение сразу.",
             "Keepalive" to "Rust/Tokio ядро держит TCP и WebSocket соединения живыми ping/pong и watchdog-проверками.",
         ) else listOf(
             "Cloudflare" to "An empty Cloudflare field uses the built-in domain list. The workers.dev relay is no longer needed.",
+            "Pool 2 / 4 / 6" to "4 is balanced. 6 reduces Telegram startup latency but keeps more WSS connections ready and uses more battery.",
+            "Lowest latency" to "If direct WSS works on your carrier, disable Cloudflare CDN. Turn it back on when direct routing is blocked.",
             "TCP fallback" to "If Cloudflare does not respond, the core tries direct TCP fallback without immediately breaking the client connection.",
             "Keepalive" to "The Rust/Tokio core keeps TCP and WebSocket connections alive with ping/pong and watchdog checks.",
         ),
@@ -1027,17 +1102,148 @@ private fun LogsCard(text: UiStrings, lines: List<String>) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF19182C)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(text.debugLog, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(text.debugLog, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color(0xFFF4F1FF))
             if (lines.isEmpty()) {
-                Text(text.noEventsYet, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(text.noEventsYet, style = MaterialTheme.typography.bodySmall, color = Color(0xFFAAA6C0))
             } else {
                 lines.forEach { line ->
-                    Text(line, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = when {
+                            " E " in line || "ERROR" in line -> Color(0xFFFF8A9A)
+                            " W " in line || "WARN" in line -> Color(0xFFFFD27D)
+                            else -> Color(0xFF82E59C)
+                        },
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ProxyHeroCard(
+    text: UiStrings,
+    status: ProxyStatus,
+    link: String,
+    requiredUpdate: Boolean,
+    stats: LatestStats,
+    cfEnabled: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onOpenTelegram: () -> Unit,
+    onCopyLink: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(142.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xFF32B7EF), Color(0xFF0788C7)),
+                        ),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_telegram_logo),
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    modifier = Modifier.size(88.dp),
+                )
+            }
+            Text(
+                when {
+                    status.isRunning -> text.active
+                    status.isStarting -> text.working
+                    else -> text.stopped
+                },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (status.isRunning || status.isStarting) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = status.isRunning && !requiredUpdate,
+                onClick = onOpenTelegram,
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(8.dp))
+                ButtonText(text.openInTelegram)
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HeroBadge("CF", if (cfEnabled) "ON" else "OFF", Modifier.weight(1f))
+                HeroBadge("WS", stats.ws, Modifier.weight(1f))
+                HeroBadge("PORT", ProxyConfig.PORT.toString(), Modifier.weight(1f))
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        link,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    IconButton(onClick = onCopyLink) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = text.copyTelegramLink)
+                    }
+                }
+            }
+            if (status.isRunning || status.isStarting) {
+                OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onStop) {
+                    Icon(Icons.Rounded.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(8.dp))
+                    ButtonText(text.stop)
+                }
+            } else {
+                Button(modifier = Modifier.fillMaxWidth(), enabled = !requiredUpdate && !status.isStarting, onClick = onStart) {
+                    Icon(Icons.Rounded.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(8.dp))
+                    ButtonText(text.start)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroBadge(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)) {
+        Row(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.size(5.dp))
+            Text(value, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -1140,6 +1346,10 @@ private fun SettingsCard(
     cfWorkerDomain: String,
     onCfWorkerDomainChange: (String) -> Unit,
     enabled: Boolean,
+    cfEnabled: Boolean,
+    onCfEnabledChange: (Boolean) -> Unit,
+    secret: String,
+    onCopySecret: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1148,6 +1358,19 @@ private fun SettingsCard(
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.proxyOptions, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = secret,
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                label = { Text(text.secret) },
+                trailingIcon = {
+                    IconButton(onClick = onCopySecret) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = text.copyTelegramLink)
+                    }
+                },
+            )
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
                 value = fakeTlsDomain,
@@ -1166,6 +1389,14 @@ private fun SettingsCard(
                 label = { Text(text.cfWorkerDomain) },
                 placeholder = { Text(text.emptyDirectFallback) },
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text.cloudflareCdn, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Switch(checked = cfEnabled, enabled = enabled, onCheckedChange = onCfEnabledChange)
+            }
         }
     }
 }
@@ -1186,18 +1417,26 @@ private fun getPingColor(ping: Long): Color = when {
     else -> MaterialTheme.colorScheme.error
 }
 
-private fun Context.startProxyService(secret: String, fakeTlsDomain: String, cfWorkerDomain: String) {
+private fun Context.startProxyService(
+    secret: String,
+    fakeTlsDomain: String,
+    cfWorkerDomain: String,
+    cfEnabled: Boolean,
+    poolSize: Int,
+) {
     val cleanFakeTlsDomain = ProxyConfig.normalizeDomain(fakeTlsDomain)
     val cleanWorkerDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
-    saveProxyPref(ProxyService.EXTRA_CF_ENABLED, true)
+    saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
+    saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
         .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
-        .putExtra(ProxyService.EXTRA_CF_ENABLED, true)
+        .putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+        .putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     ContextCompat.startForegroundService(this, intent)
 }

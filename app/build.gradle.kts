@@ -18,8 +18,8 @@ android {
         applicationId = "com.tgwsproxy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 19
-        versionName = "2.1.2"
+        versionCode = 20
+        versionName = "2.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -54,6 +54,10 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    lint {
+        // Gradle 9.7 is currently only a milestone/snapshot; keep the latest stable wrapper.
+        disable += "AndroidGradlePluginVersion"
     }
 }
 

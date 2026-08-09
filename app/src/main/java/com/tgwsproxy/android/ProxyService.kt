@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -42,11 +44,31 @@ class ProxyService : Service() {
     private var lastNotificationAtMs: Long = 0
     private var statsJob: Job? = null
     private var watchdogJob: Job? = null
+    private var networkRestartJob: Job? = null
     private var serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile private var activeNetworkHandle: Long? = null
+    @Volatile private var lastSecret: String = ""
+    @Volatile private var lastCfDomain: String = ""
+    @Volatile private var lastCfEnabled: Boolean = true
+    @Volatile private var lastPoolSize: Int = DEFAULT_POOL_SIZE
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            val handle = network.networkHandle
+            val previous = activeNetworkHandle
+            activeNetworkHandle = handle
+            if (previous != handle) scheduleNetworkRestart()
+        }
+
+        override fun onLost(network: Network) {
+            if (activeNetworkHandle == network.networkHandle) activeNetworkHandle = null
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -57,6 +79,14 @@ class ProxyService : Service() {
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val providedSecret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf(ProxyConfig::isValidSecret)
+        val cfEnabled = intent?.getBooleanExtra(EXTRA_CF_ENABLED, prefs.getBoolean(EXTRA_CF_ENABLED, true))
+            ?: prefs.getBoolean(EXTRA_CF_ENABLED, true)
+        val poolSize = (intent?.getIntExtra(EXTRA_POOL_SIZE, -1) ?: -1)
+            .takeIf { it in SUPPORTED_POOL_SIZES }
+            ?: prefs.getString(EXTRA_POOL_SIZE, DEFAULT_POOL_SIZE.toString())
+                ?.toIntOrNull()
+                ?.takeIf { it in SUPPORTED_POOL_SIZES }
+            ?: DEFAULT_POOL_SIZE
 
         val cfDomain = normalizeNativeCfDomain(
             intent?.getStringExtra(EXTRA_CF_WORKER_DOMAIN)
@@ -71,7 +101,8 @@ class ProxyService : Service() {
             putString(EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
             putString(EXTRA_CF_WORKER_DOMAIN, cfDomain)
             putString(EXTRA_CF_DOMAIN, cfDomain)
-            putBoolean(EXTRA_CF_ENABLED, true)
+            putBoolean(EXTRA_CF_ENABLED, cfEnabled)
+            putString(EXTRA_POOL_SIZE, poolSize.toString())
         }
 
         if (startTime == 0L) startTime = System.currentTimeMillis()
@@ -81,7 +112,8 @@ class ProxyService : Service() {
         }
 
         if (!nativeRunning.get() && nativeInitializing.compareAndSet(false, true)) {
-            resolveSecretAndStart(providedSecret, cfDomain, startId)
+            ProxyServiceStatus.isStarting = true
+            resolveSecretAndStart(providedSecret, cfDomain, cfEnabled, poolSize, startId)
         }
 
         return START_STICKY
@@ -93,11 +125,15 @@ class ProxyService : Service() {
         destroyed.set(true)
         statsJob?.cancel()
         watchdogJob?.cancel()
+        networkRestartJob?.cancel()
+        unregisterNetworkCallback()
         stopNativeProxy()
         releaseWakeLock()
         ProxyServiceStatus.isRunning = false
+        ProxyServiceStatus.isStarting = false
         ProxyServiceStatus.startTime = 0
         ProxyServiceStatus.lastPing = -1
+        lastSecret = ""
         AppDiagnostics.setProcessState(this, "proxy=stopped")
         serviceScope.cancel()
         super.onDestroy()
@@ -125,20 +161,22 @@ class ProxyService : Service() {
         }
     }
 
-    private fun resolveSecretAndStart(providedSecret: String?, cfDomain: String, startId: Int) {
+    private fun resolveSecretAndStart(providedSecret: String?, cfDomain: String, cfEnabled: Boolean, poolSize: Int, startId: Int) {
         Thread({
             try {
                 val secret = providedSecret ?: SecureSecretStore.load(this).orEmpty()
                 if (providedSecret != null) SecureSecretStore.save(this, providedSecret)
                 if (secret.isBlank() || destroyed.get()) {
                     nativeInitializing.set(false)
+                    ProxyServiceStatus.isStarting = false
                     if (secret.isBlank()) ProxyLogger.e("Proxy cannot start: no valid secret is available")
                     stopSelfResult(startId)
                     return@Thread
                 }
-                startNativeProxy(secret, cfDomain)
+                startNativeProxy(secret, cfDomain, cfEnabled, poolSize)
             } catch (t: Throwable) {
                 nativeInitializing.set(false)
+                ProxyServiceStatus.isStarting = false
                 ProxyLogger.e("Proxy initialization failed", t)
                 stopSelfResult(startId)
             }
@@ -148,39 +186,36 @@ class ProxyService : Service() {
         }
     }
 
-    private fun startNativeProxy(secret: String, cfDomain: String) {
+    private fun startNativeProxy(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int) {
         nativeRunning.set(true)
         nativeInitializing.set(false)
         serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         startTime = System.currentTimeMillis()
         lastPing = -1
-        ProxyServiceStatus.isRunning = true
+        ProxyServiceStatus.isRunning = false
+        ProxyServiceStatus.isStarting = true
         ProxyServiceStatus.startTime = startTime
         ProxyServiceStatus.lastPing = lastPing
         AppDiagnostics.setProcessState(this, "proxy=starting")
         ProxyLogger.i("Starting Rust/Tokio proxy core")
+        lastSecret = secret
+        lastCfDomain = cfDomain
+        lastCfEnabled = cfEnabled
+        lastPoolSize = poolSize
         acquireWakeLock()
 
         Thread({
             try {
-                val result = synchronized(nativeCallLock) {
-                    NativeProxy.setPoolSize(DEFAULT_POOL_SIZE)
-                    NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
-                    NativeProxy.setCfProxyConfig(enabled = true, priority = true, userDomain = cfDomain)
-                    NativeProxy.startProxy(
-                        host = ProxyConfig.HOST,
-                        port = ProxyConfig.PORT,
-                        dcIps = "",
-                        secret = secret,
-                        verbose = true,
-                    )
-                }
+                val result = synchronized(nativeCallLock) { configureAndStartNative(secret, cfDomain, cfEnabled, poolSize) }
                 if (result != 0) {
                     ProxyLogger.e("Rust core failed to start: code $result")
                     nativeRunning.set(false)
                     ProxyServiceStatus.isRunning = false
+                    ProxyServiceStatus.isStarting = false
                     stopSelf()
                 } else {
+                    ProxyServiceStatus.isRunning = true
+                    ProxyServiceStatus.isStarting = false
                     ProxyLogger.i("Rust core started on ${ProxyConfig.HOST}:${ProxyConfig.PORT}")
                     AppDiagnostics.setProcessState(this, "proxy=running")
                 }
@@ -188,6 +223,7 @@ class ProxyService : Service() {
                 ProxyLogger.e("Rust core startup crashed", t)
                 nativeRunning.set(false)
                 ProxyServiceStatus.isRunning = false
+                ProxyServiceStatus.isStarting = false
                 stopSelf()
             }
         }, "tgws-native-start").apply {
@@ -197,6 +233,61 @@ class ProxyService : Service() {
 
         startWatchdog()
         startStatsUpdater()
+    }
+
+    private fun configureAndStartNative(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int): Int {
+        NativeProxy.setPoolSize(poolSize)
+        NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
+        NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = true, userDomain = cfDomain)
+        return NativeProxy.startProxy(
+            host = ProxyConfig.HOST,
+            port = ProxyConfig.PORT,
+            dcIps = "",
+            secret = secret,
+            verbose = true,
+        )
+    }
+
+    private fun scheduleNetworkRestart() {
+        if (!nativeRunning.get() || destroyed.get() || System.currentTimeMillis() - startTime < NETWORK_RESTART_GRACE_MS) return
+        networkRestartJob?.cancel()
+        networkRestartJob = serviceScope.launch {
+            delay(NETWORK_RESTART_DEBOUNCE_MS)
+            if (!nativeRunning.get() || destroyed.get() || lastSecret.isBlank()) return@launch
+            ProxyLogger.i("Network changed; rebuilding proxy routes and WS pool")
+            updateNotification("network changed, reconnecting", force = true)
+            val result = runCatching {
+                synchronized(nativeCallLock) {
+                    NativeProxy.stopProxy()
+                    if (!nativeRunning.get() || destroyed.get()) return@synchronized -1
+                    configureAndStartNative(lastSecret, lastCfDomain, lastCfEnabled, lastPoolSize)
+                }
+            }.getOrElse {
+                ProxyLogger.e("Proxy restart after network change failed", it)
+                -100
+            }
+            if (result == 0) {
+                ProxyLogger.i("Proxy routes rebuilt after network change")
+                updateNotification("service online", force = true)
+            } else if (!destroyed.get()) {
+                ProxyLogger.e("Proxy could not recover after network change: code $result")
+                stopSelf()
+            }
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        runCatching {
+            val manager = getSystemService(ConnectivityManager::class.java)
+            activeNetworkHandle = manager.activeNetwork?.networkHandle
+            manager.registerDefaultNetworkCallback(networkCallback)
+        }.onFailure { ProxyLogger.w("Unable to monitor network changes", it) }
+    }
+
+    private fun unregisterNetworkCallback() {
+        runCatching {
+            getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
+        }
     }
 
     private fun startWatchdog() {
@@ -375,12 +466,16 @@ class ProxyService : Service() {
         const val EXTRA_CF_WORKER_DOMAIN = "cf_worker_domain"
         const val EXTRA_CF_DOMAIN = "cf_domain"
         const val EXTRA_CF_ENABLED = "cf_enabled"
+        const val EXTRA_POOL_SIZE = "pool_size"
         private const val PREFS = "proxy"
         private const val CHANNEL_ID = "proxy"
         private const val NOTIFICATION_ID = 1001
         private const val DEFAULT_POOL_SIZE = 4
+        private val SUPPORTED_POOL_SIZES = setOf(2, 4, 6)
         private const val NOTIFICATION_MIN_UPDATE_MS = 3000L
         private const val WAKELOCK_TIMEOUT_MS = 30L * 60 * 1000
         private const val WAKELOCK_RENEW_AFTER_MS = 20L * 60 * 1000
+        private const val NETWORK_RESTART_GRACE_MS = 10_000L
+        private const val NETWORK_RESTART_DEBOUNCE_MS = 1_500L
     }
 }

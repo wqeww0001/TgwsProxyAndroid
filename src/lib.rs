@@ -2,6 +2,7 @@ pub mod cfproxy;
 pub mod config;
 pub mod crypto;
 pub mod proxy;
+pub mod router;
 pub mod ws;
 
 use config::*;
@@ -102,6 +103,7 @@ unsafe fn start_proxy_impl(
 
     init_logging(is_verbose);
     cfproxy::clear_cfproxy_429_cooldowns();
+    router::reset();
 
     if secret_str.len() == 32 {
         if hex::decode(&secret_str).is_ok() {
@@ -130,6 +132,17 @@ unsafe fn start_proxy_impl(
         let addr = format!("{}:{}", host_task, go_port);
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
+                let warmup =
+                    tokio::time::timeout(WS_POOL_WARMUP_TIMEOUT, pool_task.warmup(&map_task)).await;
+                match warmup {
+                    Ok(()) => linfo!(
+                        "WS pool warmup complete: {} idle",
+                        pool_task.idle_count().await
+                    ),
+                    Err(_) => {
+                        lwarn!("WS pool warmup timed out; continuing with on-demand connections")
+                    }
+                }
                 let _ = tx.send(Ok(()));
                 if let Err(e) = run_proxy(
                     pool_task,
@@ -205,6 +218,7 @@ fn stop_proxy_impl() -> c_int {
     WS_BLACKLIST.write().clear();
     DC_FAIL_UNTIL.write().clear();
     cfproxy::clear_cfproxy_429_cooldowns();
+    router::reset();
 
     linfo!("StopProxy: exit");
     0
@@ -220,8 +234,8 @@ fn set_pool_size_impl(size: c_int) {
     if n < 2 {
         n = 2;
     }
-    if n > 16 {
-        n = 16;
+    if n > 6 {
+        n = 6;
     }
     POOL_SIZE.store(n, Ordering::Relaxed);
 }

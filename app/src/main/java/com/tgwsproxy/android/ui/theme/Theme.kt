@@ -32,14 +32,18 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Teal40,
-    secondary = BlueGrey40,
-    tertiary = Amber40,
-    background = androidx.compose.ui.graphics.Color(0xFFF4FAFA),
-    surface = androidx.compose.ui.graphics.Color(0xFFFFFFFF),
-    surfaceVariant = androidx.compose.ui.graphics.Color(0xFFE4F1F2),
-    onSurface = androidx.compose.ui.graphics.Color(0xFF15282C),
-    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF546B71),
+    primary = androidx.compose.ui.graphics.Color(0xFF5B5797),
+    onPrimary = androidx.compose.ui.graphics.Color.White,
+    primaryContainer = androidx.compose.ui.graphics.Color(0xFFE3E0FF),
+    onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFF19163F),
+    secondary = androidx.compose.ui.graphics.Color(0xFF625B71),
+    tertiary = androidx.compose.ui.graphics.Color(0xFF0086C9),
+    background = androidx.compose.ui.graphics.Color(0xFFFAF7FC),
+    surface = androidx.compose.ui.graphics.Color(0xFFFFFBFF),
+    surfaceVariant = androidx.compose.ui.graphics.Color(0xFFE8E5EF),
+    outline = androidx.compose.ui.graphics.Color(0xFF7A7583),
+    onSurface = androidx.compose.ui.graphics.Color(0xFF1C1B20),
+    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF49454F),
 )
 
 private val AppShapes = Shapes(

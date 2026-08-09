@@ -6,12 +6,17 @@ import java.util.Locale
 
 object ProxyServiceStatus {
     private val _isRunning = AtomicBoolean(false)
+    private val _isStarting = AtomicBoolean(false)
     private val _startTime = AtomicLong(0)
     private val _lastPing = AtomicLong(-1)
 
     var isRunning: Boolean
         get() = _isRunning.get()
         set(value) = _isRunning.set(value)
+
+    var isStarting: Boolean
+        get() = _isStarting.get()
+        set(value) = _isStarting.set(value)
 
     var startTime: Long
         get() = _startTime.get()
