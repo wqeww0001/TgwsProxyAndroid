@@ -18,6 +18,7 @@ class BootReceiver : BroadcastReceiver() {
                 putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, preferences.getString(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN).orEmpty())
                 putExtra(ProxyService.EXTRA_CF_ENABLED, preferences.getBoolean(ProxyService.EXTRA_CF_ENABLED, true))
                 putExtra(ProxyService.EXTRA_POOL_SIZE, preferences.getString(ProxyService.EXTRA_POOL_SIZE, "4")?.toIntOrNull() ?: 4)
+                putExtra(ProxyService.EXTRA_DC_IPS, preferences.getString(ProxyService.EXTRA_DC_IPS, "").orEmpty())
             }
             ContextCompat.startForegroundService(context, serviceIntent)
             ProxyLogger.i("Auto-start requested after ${intent.action}")

@@ -31,6 +31,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,21 +51,15 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Article
-import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.PowerSettingsNew
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -84,16 +80,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -386,7 +387,6 @@ private fun ProxyScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var selectedTab by rememberSaveable { mutableStateOf(AppTab.Home) }
     var language by rememberSaveable {
         mutableStateOf(
             if (context.getProxyPref(LANGUAGE_PREF, AppLanguage.Ru.code) == AppLanguage.En.code) AppLanguage.En else AppLanguage.Ru,
@@ -399,6 +399,7 @@ private fun ProxyScreen(
     var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
     var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, true)) }
+    var dcMappings by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_DC_IPS, "")) }
     var poolSize by rememberSaveable {
         mutableIntStateOf(
             context.getProxyPref(ProxyService.EXTRA_POOL_SIZE, "4").toIntOrNull()?.takeIf { it in listOf(2, 4, 6) } ?: 4,
@@ -543,29 +544,24 @@ private fun ProxyScreen(
         return
     }
 
+    val pagerState = rememberPagerState(pageCount = { AppTab.entries.size })
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        bottomBar = {
-            BottomTabs(
-                selectedTab = selectedTab,
-                language = language,
-                onSelect = { selectedTab = it },
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
     ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(appBackgroundBrush(themeMode)),
-        ) {
-            BackgroundOrbs(themeMode)
-            Column(
-                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                when (selectedTab) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize().padding(innerPadding),
+            beyondViewportPageCount = 1,
+            key = { AppTab.entries[it].name },
+        ) { page ->
+            Box(modifier = Modifier.fillMaxSize().background(appBackgroundBrush(themeMode))) {
+                BackgroundOrbs(themeMode)
+                Column(
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    when (AppTab.entries[page]) {
                     AppTab.Home -> HomePage(
                         text = text,
                         status = proxyStatus,
@@ -573,7 +569,11 @@ private fun ProxyScreen(
                         logs = logLines,
                         cfEnabled = cfEnabled,
                         onStart = {
-                            context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize)
+                            if (!ProxyConfig.isValidDcMappings(dcMappings)) {
+                                Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
+                            } else {
+                                context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings)
+                            }
                             proxyStatus = ProxyStatus(isStarting = true)
                         },
                         onStop = {
@@ -627,6 +627,11 @@ private fun ProxyScreen(
                         onCfWorkerDomainChange = {
                             cfWorkerDomain = ProxyConfig.cleanDomain(it)
                             context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+                        },
+                        dcMappings = dcMappings,
+                        onDcMappingsChange = {
+                            dcMappings = it
+                            context.saveProxyPref(ProxyService.EXTRA_DC_IPS, it)
                         },
                         enabled = !proxyStatus.isRunning && !proxyStatus.isStarting,
                         cfEnabled = cfEnabled,
@@ -684,6 +689,7 @@ private fun ProxyScreen(
                     )
                     AppTab.Help -> HelpPage(language)
                 }
+                }
             }
         }
     }
@@ -705,58 +711,17 @@ private fun BackgroundOrbs(mode: AppThemeMode) {
         AppThemeMode.Aurora -> listOf(Color(0xFF6BE6C2), Color(0xFFA48CFF))
         AppThemeMode.Sunset -> listOf(Color(0xFFFF975F), Color(0xFFDA88FF))
     }
+    val motion = rememberInfiniteTransition(label = "liquid-background")
+    val drift by motion.animateFloat(
+        initialValue = -0.06f,
+        targetValue = 0.08f,
+        animationSpec = infiniteRepeatable(animation = tween(8_000), repeatMode = RepeatMode.Reverse),
+        label = "liquid-drift",
+    )
     Canvas(Modifier.fillMaxSize()) {
-        drawCircle(colors[0].copy(alpha = 0.22f), radius = size.minDimension * 0.48f, center = Offset(size.width * 0.92f, size.height * 0.08f))
-        drawCircle(colors[1].copy(alpha = 0.18f), radius = size.minDimension * 0.55f, center = Offset(size.width * 0.05f, size.height * 0.72f))
-    }
-}
-
-@Composable
-private fun BottomTabs(
-    selectedTab: AppTab,
-    language: AppLanguage,
-    onSelect: (AppTab) -> Unit,
-) {
-    NavigationBar(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).clip(RoundedCornerShape(28.dp)),
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-        tonalElevation = 4.dp,
-    ) {
-        AppTab.entries.forEach { tab ->
-            NavigationBarItem(
-                selected = selectedTab == tab,
-                onClick = { onSelect(tab) },
-                icon = {
-                    Icon(
-                        imageVector = when (tab) {
-                            AppTab.Home -> Icons.Rounded.Home
-                            AppTab.Logs -> Icons.AutoMirrored.Rounded.Article
-                            AppTab.Settings -> Icons.Rounded.Settings
-                            AppTab.Help -> Icons.AutoMirrored.Rounded.HelpOutline
-                        },
-                        contentDescription = tabTitle(tab, language),
-                    )
-                },
-                label = { Text(tabTitle(tab, language)) },
-            )
-        }
-    }
-}
-
-private fun tabTitle(tab: AppTab, language: AppLanguage): String {
-    return when (language) {
-        AppLanguage.Ru -> when (tab) {
-            AppTab.Home -> "Прокси"
-            AppTab.Logs -> "Логи"
-            AppTab.Settings -> "Настройки"
-            AppTab.Help -> "Инфо"
-        }
-        AppLanguage.En -> when (tab) {
-            AppTab.Home -> "Proxy"
-            AppTab.Logs -> "Logs"
-            AppTab.Settings -> "Settings"
-            AppTab.Help -> "Info"
-        }
+        drawCircle(colors[0].copy(alpha = 0.25f), radius = size.minDimension * 0.52f, center = Offset(size.width * (0.90f + drift), size.height * (0.10f - drift * 0.5f)))
+        drawCircle(colors[1].copy(alpha = 0.21f), radius = size.minDimension * 0.58f, center = Offset(size.width * (0.06f - drift), size.height * (0.70f + drift)))
+        drawCircle(Color.White.copy(alpha = if (mode == AppThemeMode.Dark) 0.04f else 0.18f), radius = size.minDimension * 0.32f, center = Offset(size.width * (0.42f + drift), size.height * 0.38f))
     }
 }
 
@@ -835,6 +800,8 @@ private fun SettingsPage(
     onFakeTlsDomainChange: (String) -> Unit,
     cfWorkerDomain: String,
     onCfWorkerDomainChange: (String) -> Unit,
+    dcMappings: String,
+    onDcMappingsChange: (String) -> Unit,
     enabled: Boolean,
     cfEnabled: Boolean,
     onCfEnabledChange: (Boolean) -> Unit,
@@ -870,6 +837,8 @@ private fun SettingsPage(
         onFakeTlsDomainChange = onFakeTlsDomainChange,
         cfWorkerDomain = cfWorkerDomain,
         onCfWorkerDomainChange = onCfWorkerDomainChange,
+        dcMappings = dcMappings,
+        onDcMappingsChange = onDcMappingsChange,
         enabled = enabled,
         cfEnabled = cfEnabled,
         onCfEnabledChange = onCfEnabledChange,
@@ -899,10 +868,30 @@ private fun SettingsPage(
     )
 }
 
+private fun Modifier.liquidGlass(radius: Dp = 24.dp): Modifier = this
+    .shadow(
+        elevation = 12.dp,
+        shape = RoundedCornerShape(radius),
+        clip = false,
+        ambientColor = Color(0x665B5797),
+        spotColor = Color(0x445B5797),
+    )
+    .drawWithCache {
+        val corner = CornerRadius(radius.toPx(), radius.toPx())
+        val stroke = 1.15.dp.toPx()
+        val highlight = Brush.linearGradient(
+            colors = listOf(Color.White.copy(alpha = 0.82f), Color.White.copy(alpha = 0.12f), Color(0xFF8D86D8).copy(alpha = 0.38f)),
+        )
+        onDrawWithContent {
+            drawContent()
+            drawRoundRect(brush = highlight, cornerRadius = corner, style = Stroke(width = stroke))
+        }
+    }
+
 @Composable
 private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOpenSettings: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -925,7 +914,7 @@ private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOp
 @Composable
 private fun PoolSizeCard(text: UiStrings, poolSize: Int, enabled: Boolean, onPoolSizeChange: (Int) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -1062,7 +1051,7 @@ private fun PageTitle(title: String, subtitle: String) {
 @Composable
 private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChange: (AppLanguage) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -1080,7 +1069,7 @@ private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChang
 @Composable
 private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.38f)),
@@ -1108,7 +1097,7 @@ private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSel
 @Composable
 private fun AutoStartCard(language: AppLanguage, enabled: Boolean, onEnabledChange: (Boolean) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
@@ -1130,7 +1119,7 @@ private fun AutoStartCard(language: AppLanguage, enabled: Boolean, onEnabledChan
 @Composable
 private fun TelegramClientCard(language: AppLanguage, onForget: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
@@ -1160,7 +1149,7 @@ private fun AutoUpdateCard(
     onUnitChange: (UpdateIntervalUnit) -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -1211,7 +1200,7 @@ private fun AutoUpdateCard(
 @Composable
 private fun HelpCategory(title: String, items: List<Pair<String, String>>) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -1261,7 +1250,7 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
 @Composable
 private fun ControlPanel(text: UiStrings, running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(28.dp),
         shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (running) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f) else MaterialTheme.colorScheme.surface,
@@ -1322,7 +1311,7 @@ private fun UpdateCard(
     onInstall: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -1364,9 +1353,9 @@ private fun UpdateCard(
 @Composable
 private fun LogsCard(text: UiStrings, lines: List<String>) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF19182C)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF19182C).copy(alpha = 0.84f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(text.debugLog, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color(0xFFF4F1FF))
@@ -1403,7 +1392,7 @@ private fun ProxyHeroCard(
     onCopyLink: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(26.dp),
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
@@ -1514,7 +1503,7 @@ private fun Header(status: ProxyStatus, text: UiStrings) {
         label = "status-alpha",
     )
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(30.dp),
         shape = RoundedCornerShape(30.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f)),
@@ -1562,7 +1551,7 @@ private fun Metric(label: String, value: String, color: Color = MaterialTheme.co
 private fun ConnectionCard(text: UiStrings, secret: String, link: String, status: ProxyStatus) {
     var secretVisible by rememberSaveable { mutableStateOf(false) }
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -1601,6 +1590,8 @@ private fun SettingsCard(
     onFakeTlsDomainChange: (String) -> Unit,
     cfWorkerDomain: String,
     onCfWorkerDomainChange: (String) -> Unit,
+    dcMappings: String,
+    onDcMappingsChange: (String) -> Unit,
     enabled: Boolean,
     cfEnabled: Boolean,
     onCfEnabledChange: (Boolean) -> Unit,
@@ -1608,7 +1599,7 @@ private fun SettingsCard(
     onCopySecret: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().liquidGlass(),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
@@ -1645,6 +1636,26 @@ private fun SettingsCard(
                 label = { Text(text.cfWorkerDomain) },
                 placeholder = { Text(text.emptyDirectFallback) },
             )
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = dcMappings,
+                onValueChange = onDcMappingsChange,
+                enabled = enabled,
+                minLines = 3,
+                maxLines = 6,
+                label = { Text(if (text.start == "Запустить") "Датацентры Telegram (DC → IP)" else "Telegram datacenters (DC → IP)") },
+                placeholder = { Text("2:149.154.167.51\n4:149.154.167.91", fontFamily = FontFamily.Monospace) },
+                isError = !ProxyConfig.isValidDcMappings(dcMappings),
+                supportingText = {
+                    Text(
+                        when {
+                            !ProxyConfig.isValidDcMappings(dcMappings) -> if (text.start == "Запустить") "Неверный формат. Одна строка: номерDC:IPv4" else "Invalid format. One line: dcNumber:IPv4"
+                            text.start == "Запустить" -> "Необязательно. Каждая строка направляет Telegram DC на выбранный IP. Пусто = безопасные адреса по умолчанию."
+                            else -> "Optional. Each line routes a Telegram DC to the selected IP. Empty uses safe defaults."
+                        },
+                    )
+                },
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1679,6 +1690,7 @@ private fun Context.startProxyService(
     cfWorkerDomain: String,
     cfEnabled: Boolean,
     poolSize: Int,
+    dcMappings: String,
 ) {
     val cleanFakeTlsDomain = ProxyConfig.normalizeDomain(fakeTlsDomain)
     val cleanWorkerDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
@@ -1687,12 +1699,14 @@ private fun Context.startProxyService(
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
+    saveProxyPref(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
         .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
         .putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
+        .putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     ContextCompat.startForegroundService(this, intent)
 }

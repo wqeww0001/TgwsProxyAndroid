@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ProxyService : Service() {
     private val nativeRunning = AtomicBoolean(false)
     private val nativeInitializing = AtomicBoolean(false)
+    private val restartInProgress = AtomicBoolean(false)
     private val destroyed = AtomicBoolean(false)
     private val nativeCallLock = Any()
     private var wakeLock: PowerManager.WakeLock? = null
@@ -51,6 +52,8 @@ class ProxyService : Service() {
     @Volatile private var lastCfDomain: String = ""
     @Volatile private var lastCfEnabled: Boolean = true
     @Volatile private var lastPoolSize: Int = DEFAULT_POOL_SIZE
+    @Volatile private var lastDcIps: String = ""
+    @Volatile private var consecutivePortFailures: Int = 0
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -96,6 +99,10 @@ class ProxyService : Service() {
             intent?.getStringExtra(EXTRA_FAKE_TLS_DOMAIN)
                 ?: prefs.getString(EXTRA_FAKE_TLS_DOMAIN, "").orEmpty(),
         )
+        val dcIps = ProxyConfig.normalizeDcMappings(
+            intent?.getStringExtra(EXTRA_DC_IPS)
+                ?: prefs.getString(EXTRA_DC_IPS, "").orEmpty(),
+        ).takeIf(ProxyConfig::isValidDcMappings).orEmpty()
 
         prefs.edit {
             putString(EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
@@ -103,6 +110,7 @@ class ProxyService : Service() {
             putString(EXTRA_CF_DOMAIN, cfDomain)
             putBoolean(EXTRA_CF_ENABLED, cfEnabled)
             putString(EXTRA_POOL_SIZE, poolSize.toString())
+            putString(EXTRA_DC_IPS, dcIps)
         }
 
         if (startTime == 0L) startTime = System.currentTimeMillis()
@@ -113,7 +121,7 @@ class ProxyService : Service() {
 
         if (!nativeRunning.get() && nativeInitializing.compareAndSet(false, true)) {
             ProxyServiceStatus.isStarting = true
-            resolveSecretAndStart(providedSecret, cfDomain, cfEnabled, poolSize, startId)
+            resolveSecretAndStart(providedSecret, cfDomain, cfEnabled, poolSize, dcIps, startId)
         }
 
         return START_STICKY
@@ -161,7 +169,7 @@ class ProxyService : Service() {
         }
     }
 
-    private fun resolveSecretAndStart(providedSecret: String?, cfDomain: String, cfEnabled: Boolean, poolSize: Int, startId: Int) {
+    private fun resolveSecretAndStart(providedSecret: String?, cfDomain: String, cfEnabled: Boolean, poolSize: Int, dcIps: String, startId: Int) {
         Thread({
             try {
                 val secret = providedSecret ?: SecureSecretStore.load(this).orEmpty()
@@ -173,7 +181,7 @@ class ProxyService : Service() {
                     stopSelfResult(startId)
                     return@Thread
                 }
-                startNativeProxy(secret, cfDomain, cfEnabled, poolSize)
+                startNativeProxy(secret, cfDomain, cfEnabled, poolSize, dcIps)
             } catch (t: Throwable) {
                 nativeInitializing.set(false)
                 ProxyServiceStatus.isStarting = false
@@ -186,7 +194,7 @@ class ProxyService : Service() {
         }
     }
 
-    private fun startNativeProxy(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int) {
+    private fun startNativeProxy(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int, dcIps: String) {
         nativeRunning.set(true)
         nativeInitializing.set(false)
         serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -202,11 +210,12 @@ class ProxyService : Service() {
         lastCfDomain = cfDomain
         lastCfEnabled = cfEnabled
         lastPoolSize = poolSize
+        lastDcIps = dcIps
         acquireWakeLock()
 
         Thread({
             try {
-                val result = synchronized(nativeCallLock) { configureAndStartNative(secret, cfDomain, cfEnabled, poolSize) }
+                val result = synchronized(nativeCallLock) { configureAndStartNative(secret, cfDomain, cfEnabled, poolSize, dcIps) }
                 if (result != 0) {
                     ProxyLogger.e("Rust core failed to start: code $result")
                     nativeRunning.set(false)
@@ -235,14 +244,14 @@ class ProxyService : Service() {
         startStatsUpdater()
     }
 
-    private fun configureAndStartNative(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int): Int {
+    private fun configureAndStartNative(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int, dcIps: String): Int {
         NativeProxy.setPoolSize(poolSize)
         NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
         NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = true, userDomain = cfDomain)
         return NativeProxy.startProxy(
             host = ProxyConfig.HOST,
             port = ProxyConfig.PORT,
-            dcIps = "",
+            dcIps = ProxyConfig.dcMappingsForNative(dcIps),
             secret = secret,
             verbose = true,
         )
@@ -250,28 +259,44 @@ class ProxyService : Service() {
 
     private fun scheduleNetworkRestart() {
         if (!nativeRunning.get() || destroyed.get() || System.currentTimeMillis() - startTime < NETWORK_RESTART_GRACE_MS) return
+        scheduleCoreRestart("Network changed", NETWORK_RESTART_DEBOUNCE_MS)
+    }
+
+    private fun scheduleCoreRestart(reason: String, debounceMs: Long = 0L) {
+        if (!nativeRunning.get() || destroyed.get() || lastSecret.isBlank()) return
+        if (!restartInProgress.compareAndSet(false, true)) return
         networkRestartJob?.cancel()
         networkRestartJob = serviceScope.launch {
-            delay(NETWORK_RESTART_DEBOUNCE_MS)
-            if (!nativeRunning.get() || destroyed.get() || lastSecret.isBlank()) return@launch
-            ProxyLogger.i("Network changed; rebuilding proxy routes and WS pool")
-            updateNotification("network changed, reconnecting", force = true)
-            val result = runCatching {
-                synchronized(nativeCallLock) {
-                    NativeProxy.stopProxy()
-                    if (!nativeRunning.get() || destroyed.get()) return@synchronized -1
-                    configureAndStartNative(lastSecret, lastCfDomain, lastCfEnabled, lastPoolSize)
+            try {
+                if (debounceMs > 0) delay(debounceMs)
+                if (!nativeRunning.get() || destroyed.get() || lastSecret.isBlank()) return@launch
+                ProxyLogger.i("$reason; rebuilding proxy routes and WS pool")
+                updateNotification("reconnecting", force = true)
+                var result = -1
+                for (attempt in 0 until CORE_RESTART_ATTEMPTS) {
+                    result = runCatching {
+                        synchronized(nativeCallLock) {
+                            NativeProxy.stopProxy()
+                            if (!nativeRunning.get() || destroyed.get()) return@synchronized -1
+                            configureAndStartNative(lastSecret, lastCfDomain, lastCfEnabled, lastPoolSize, lastDcIps)
+                        }
+                    }.getOrElse {
+                        ProxyLogger.e("Proxy recovery attempt ${attempt + 1} failed", it)
+                        -100
+                    }
+                    if (result == 0) break
+                    delay(CORE_RESTART_RETRY_MS * (attempt + 1))
                 }
-            }.getOrElse {
-                ProxyLogger.e("Proxy restart after network change failed", it)
-                -100
-            }
-            if (result == 0) {
-                ProxyLogger.i("Proxy routes rebuilt after network change")
-                updateNotification("service online", force = true)
-            } else if (!destroyed.get()) {
-                ProxyLogger.e("Proxy could not recover after network change: code $result")
-                stopSelf()
+                if (result == 0) {
+                    consecutivePortFailures = 0
+                    ProxyLogger.i("Proxy routes and connection pool recovered")
+                    updateNotification("service online", force = true)
+                } else if (!destroyed.get()) {
+                    ProxyLogger.e("Proxy recovery is pending after $CORE_RESTART_ATTEMPTS attempts: code $result")
+                    updateNotification("recovery pending", force = true)
+                }
+            } finally {
+                restartInProgress.set(false)
             }
         }
     }
@@ -316,6 +341,7 @@ class ProxyService : Service() {
                 if (!nativeRunning.get()) continue
                 renewWakeLockIfNeeded()
                 val online = isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 700)
+                consecutivePortFailures = if (online) 0 else consecutivePortFailures + 1
                 lastPing = if (online) 0 else -1
                 ProxyServiceStatus.lastPing = lastPing
                 val stats = runCatching {
@@ -325,6 +351,10 @@ class ProxyService : Service() {
                     ProxyLogger.d("Rust stats: $stats")
                 }
                 updateNotification(if (online) compactStats(stats) else "service N/A")
+                if (consecutivePortFailures >= PORT_FAILURES_BEFORE_RESTART) {
+                    consecutivePortFailures = 0
+                    scheduleCoreRestart("Watchdog detected an unresponsive local proxy")
+                }
             }
         }
     }
@@ -467,6 +497,7 @@ class ProxyService : Service() {
         const val EXTRA_CF_DOMAIN = "cf_domain"
         const val EXTRA_CF_ENABLED = "cf_enabled"
         const val EXTRA_POOL_SIZE = "pool_size"
+        const val EXTRA_DC_IPS = "dc_ips"
         private const val PREFS = "proxy"
         private const val CHANNEL_ID = "proxy"
         private const val NOTIFICATION_ID = 1001
@@ -477,5 +508,8 @@ class ProxyService : Service() {
         private const val WAKELOCK_RENEW_AFTER_MS = 20L * 60 * 1000
         private const val NETWORK_RESTART_GRACE_MS = 10_000L
         private const val NETWORK_RESTART_DEBOUNCE_MS = 1_500L
+        private const val PORT_FAILURES_BEFORE_RESTART = 3
+        private const val CORE_RESTART_ATTEMPTS = 3
+        private const val CORE_RESTART_RETRY_MS = 1_500L
     }
 }

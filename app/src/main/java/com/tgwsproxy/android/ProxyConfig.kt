@@ -51,4 +51,30 @@ object ProxyConfig {
                 }
         }.orEmpty()
     }
+
+    fun normalizeDcMappings(value: String): String = value
+        .lineSequence()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .joinToString("\n")
+
+    fun isValidDcMappings(value: String): Boolean {
+        val lines = normalizeDcMappings(value).lines().filter(String::isNotBlank)
+        if (lines.isEmpty()) return true
+        return lines.all { line ->
+            val parts = line.split(':')
+            if (parts.size != 2) return@all false
+            val dc = parts[0].trim().toIntOrNull()
+            val octets = parts[1].trim().split('.')
+            dc != null && dc in 1..5 && octets.size == 4 && octets.all { octet ->
+                val number = octet.toIntOrNull()
+                number != null && number in 0..255
+            }
+        }
+    }
+
+    fun dcMappingsForNative(value: String): String {
+        val normalized = normalizeDcMappings(value)
+        return if (isValidDcMappings(normalized)) normalized.lines().filter(String::isNotBlank).joinToString(",") else ""
+    }
 }
