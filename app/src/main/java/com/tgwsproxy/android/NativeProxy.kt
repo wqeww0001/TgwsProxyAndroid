@@ -16,6 +16,7 @@ private interface ProxyLibrary : Library {
     fun SetCfProxyConfig(enabled: Int, priority: Int, userDomain: String)
     fun GetSecretWithPrefix(): Pointer?
     fun GetStats(): Pointer?
+    fun GetLastTransportError(): Pointer?
     fun FreeString(p: Pointer)
 }
 
@@ -51,6 +52,13 @@ object NativeProxy {
 
     fun getStats(): String? {
         val ptr = ProxyLibrary.INSTANCE.GetStats() ?: return null
+        val result = ptr.getString(0)
+        ProxyLibrary.INSTANCE.FreeString(ptr)
+        return result
+    }
+
+    fun getLastError(): String? {
+        val ptr = ProxyLibrary.INSTANCE.GetLastTransportError() ?: return null
         val result = ptr.getString(0)
         ProxyLibrary.INSTANCE.FreeString(ptr)
         return result

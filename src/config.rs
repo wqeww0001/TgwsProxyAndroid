@@ -62,6 +62,7 @@ impl Default for Cfproxy429State {
 
 // Cloudflare proxy config
 pub static CFPROXY_ENABLED: AtomicBool = AtomicBool::new(true);
+pub static CFPROXY_PRIORITY: AtomicBool = AtomicBool::new(true);
 
 pub struct CfproxyConfig {
     pub user_domain: String,
@@ -136,6 +137,7 @@ pub static WS_BLACKLIST: Lazy<RwLock<HashMap<(i32, i32), bool>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 pub static DC_FAIL_UNTIL: Lazy<RwLock<HashMap<(i32, i32), f64>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+pub static LAST_TRANSPORT_ERROR: Lazy<RwLock<String>> = Lazy::new(|| RwLock::new(String::new()));
 
 pub static ZERO64: [u8; 64] = [0u8; 64];
 
@@ -154,6 +156,7 @@ pub struct Stats {
     pub connections_passthrough: AtomicI64,
     pub connections_bad: AtomicI64,
     pub ws_errors: AtomicI64,
+    pub connection_failures: AtomicI64,
     pub bytes_up: AtomicI64,
     pub bytes_down: AtomicI64,
     pub pool_hits: AtomicI64,
@@ -167,18 +170,21 @@ impl Stats {
         let ph = self.pool_hits.load(Ordering::Relaxed);
         let pm = self.pool_misses.load(Ordering::Relaxed);
         format!(
-            "total={} active={} ws={} tcp_fb={} cf={} bad={} err={} pool={}/{} up={} down={}",
+            "total={} active={} ws={} tcp_fb={} cf={} bad={} err={} ws_try={} pool={}/{} up={} down={} up_b={} down_b={}",
             self.connections_total.load(Ordering::Relaxed),
             self.connections_active.load(Ordering::Relaxed),
             self.connections_ws.load(Ordering::Relaxed),
             self.connections_tcp_fallback.load(Ordering::Relaxed),
             self.connections_cfproxy.load(Ordering::Relaxed),
             self.connections_bad.load(Ordering::Relaxed),
+            self.connection_failures.load(Ordering::Relaxed),
             self.ws_errors.load(Ordering::Relaxed),
             ph,
             ph + pm,
             human_bytes(self.bytes_up.load(Ordering::Relaxed)),
             human_bytes(self.bytes_down.load(Ordering::Relaxed)),
+            self.bytes_up.load(Ordering::Relaxed),
+            self.bytes_down.load(Ordering::Relaxed),
         )
     }
 
@@ -199,7 +205,7 @@ impl Stats {
         if tcp > 0 {
             parts.push(format!("tcp:{}", tcp));
         }
-        let err = self.ws_errors.load(Ordering::Relaxed);
+        let err = self.connection_failures.load(Ordering::Relaxed);
         if err > 0 {
             parts.push(format!("ош:{}", err));
         }
@@ -221,6 +227,7 @@ impl Stats {
         self.connections_passthrough.store(0, Ordering::Relaxed);
         self.connections_bad.store(0, Ordering::Relaxed);
         self.ws_errors.store(0, Ordering::Relaxed);
+        self.connection_failures.store(0, Ordering::Relaxed);
         self.bytes_up.store(0, Ordering::Relaxed);
         self.bytes_down.store(0, Ordering::Relaxed);
         self.pool_hits.store(0, Ordering::Relaxed);

@@ -104,6 +104,7 @@ unsafe fn start_proxy_impl(
     init_logging(is_verbose);
     cfproxy::clear_cfproxy_429_cooldowns();
     router::reset();
+    LAST_TRANSPORT_ERROR.write().clear();
 
     if secret_str.len() == 32 {
         if hex::decode(&secret_str).is_ok() {
@@ -132,15 +133,24 @@ unsafe fn start_proxy_impl(
         let addr = format!("{}:{}", host_task, go_port);
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
-                let warmup =
-                    tokio::time::timeout(WS_POOL_WARMUP_TIMEOUT, pool_task.warmup(&map_task)).await;
-                match warmup {
-                    Ok(()) => linfo!(
-                        "WS pool warmup complete: {} idle",
-                        pool_task.idle_count().await
-                    ),
-                    Err(_) => {
-                        lwarn!("WS pool warmup timed out; continuing with on-demand connections")
+                if CFPROXY_ENABLED.load(Ordering::Relaxed)
+                    && CFPROXY_PRIORITY.load(Ordering::Relaxed)
+                {
+                    linfo!("CF priority enabled; direct WS pool warmup skipped");
+                } else {
+                    let warmup =
+                        tokio::time::timeout(WS_POOL_WARMUP_TIMEOUT, pool_task.warmup(&map_task))
+                            .await;
+                    match warmup {
+                        Ok(()) => linfo!(
+                            "WS pool warmup complete: {} idle",
+                            pool_task.idle_count().await
+                        ),
+                        Err(_) => {
+                            lwarn!(
+                                "WS pool warmup timed out; continuing with on-demand connections"
+                            )
+                        }
                     }
                 }
                 let _ = tx.send(Ok(()));
@@ -259,16 +269,17 @@ unsafe fn set_cfproxy_cache_dir_impl(c_cache_dir: *const c_char) {
 #[no_mangle]
 pub unsafe extern "C" fn SetCfProxyConfig(
     enabled: c_int,
-    _priority: c_int,
+    priority: c_int,
     c_user_domain: *const c_char,
 ) {
     ffi_guard("SetCfProxyConfig", (), || unsafe {
-        set_cfproxy_config_impl(enabled, _priority, c_user_domain)
+        set_cfproxy_config_impl(enabled, priority, c_user_domain)
     });
 }
 
-unsafe fn set_cfproxy_config_impl(enabled: c_int, _priority: c_int, c_user_domain: *const c_char) {
+unsafe fn set_cfproxy_config_impl(enabled: c_int, priority: c_int, c_user_domain: *const c_char) {
     CFPROXY_ENABLED.store(enabled != 0, Ordering::Relaxed);
+    CFPROXY_PRIORITY.store(priority != 0, Ordering::Relaxed);
     let user_domain = cstr_to_string(c_user_domain);
     let mut cfg = CFPROXY.write();
     cfg.user_domain = user_domain.clone();
@@ -301,6 +312,15 @@ pub extern "C" fn GetStats() -> *mut c_char {
     ffi_guard("GetStats", std::ptr::null_mut(), || {
         let s = STATS.summary();
         CString::new(s).unwrap_or_default().into_raw()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn GetLastTransportError() -> *mut c_char {
+    ffi_guard("GetLastTransportError", std::ptr::null_mut(), || {
+        CString::new(LAST_TRANSPORT_ERROR.read().clone())
+            .unwrap_or_default()
+            .into_raw()
     })
 }
 

@@ -54,6 +54,10 @@ class ProxyService : Service() {
     @Volatile private var lastPoolSize: Int = DEFAULT_POOL_SIZE
     @Volatile private var lastDcIps: String = ""
     @Volatile private var consecutivePortFailures: Int = 0
+    @Volatile private var lastRouteFailures: Long = 0
+    @Volatile private var lastWsAttemptFailures: Long = 0
+    @Volatile private var lastDownBytes: Long = 0
+    @Volatile private var degradedStatsCycles: Int = 0
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -200,6 +204,10 @@ class ProxyService : Service() {
         serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         startTime = System.currentTimeMillis()
         lastPing = -1
+        lastRouteFailures = 0
+        lastWsAttemptFailures = 0
+        lastDownBytes = 0
+        degradedStatsCycles = 0
         ProxyServiceStatus.isRunning = false
         ProxyServiceStatus.isStarting = true
         ProxyServiceStatus.startTime = startTime
@@ -349,6 +357,7 @@ class ProxyService : Service() {
                 }.getOrDefault("")
                 if (stats.isNotBlank()) {
                     ProxyLogger.d("Rust stats: $stats")
+                    inspectTransportHealth(stats)
                 }
                 updateNotification(if (online) compactStats(stats) else "service N/A")
                 if (consecutivePortFailures >= PORT_FAILURES_BEFORE_RESTART) {
@@ -388,6 +397,55 @@ class ProxyService : Service() {
         val down = stats.substringAfter("down=", "").substringBefore(" ").ifBlank { "0B" }
         return "active=$active up=$up down=$down"
     }
+
+    private fun inspectTransportHealth(stats: String) {
+        val routeFailures = statLong(stats, "err")
+        val wsAttempts = statLong(stats, "ws_try")
+        val downBytes = statLong(stats, "down_b")
+        val active = statLong(stats, "active")
+
+        if (routeFailures < lastRouteFailures || wsAttempts < lastWsAttemptFailures || downBytes < lastDownBytes) {
+            lastRouteFailures = 0
+            lastWsAttemptFailures = 0
+            lastDownBytes = 0
+            degradedStatsCycles = 0
+        }
+
+        val routeFailureDelta = (routeFailures - lastRouteFailures).coerceAtLeast(0)
+        val wsAttemptDelta = (wsAttempts - lastWsAttemptFailures).coerceAtLeast(0)
+        val downProgress = downBytes > lastDownBytes
+
+        if (routeFailureDelta > 0) {
+            val nativeReason = runCatching {
+                synchronized(nativeCallLock) { NativeProxy.getLastError().orEmpty() }
+            }.getOrDefault("")
+            ProxyLogger.e(
+                "Telegram transport failed +$routeFailureDelta" +
+                    nativeReason.takeIf(String::isNotBlank)?.let { ": $it" }.orEmpty(),
+            )
+            degradedStatsCycles++
+        } else if (downProgress || active == 0L) {
+            degradedStatsCycles = 0
+        } else if (active >= 3 && wsAttemptDelta > 0) {
+            degradedStatsCycles++
+            ProxyLogger.w("Direct WS unavailable (+$wsAttemptDelta attempts); waiting for CF/TCP fallback")
+        }
+
+        lastRouteFailures = routeFailures
+        lastWsAttemptFailures = wsAttempts
+        lastDownBytes = downBytes
+
+        if (degradedStatsCycles >= DEGRADED_STATS_CYCLES_BEFORE_RESTART) {
+            degradedStatsCycles = 0
+            scheduleCoreRestart("Rust stats indicate degraded Telegram transport")
+        }
+    }
+
+    private fun statLong(stats: String, key: String): Long = stats
+        .substringAfter("$key=", "")
+        .substringBefore(' ')
+        .toLongOrNull()
+        ?: 0L
 
     private fun isPortOpen(host: String, port: Int, timeoutMs: Int): Boolean {
         return runCatching {
@@ -511,5 +569,6 @@ class ProxyService : Service() {
         private const val PORT_FAILURES_BEFORE_RESTART = 3
         private const val CORE_RESTART_ATTEMPTS = 3
         private const val CORE_RESTART_RETRY_MS = 1_500L
+        private const val DEGRADED_STATS_CYCLES_BEFORE_RESTART = 2
     }
 }

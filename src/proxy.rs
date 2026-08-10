@@ -2,7 +2,7 @@ use crate::cfproxy::*;
 use crate::config::*;
 use crate::crypto::*;
 use crate::ws::*;
-use crate::{ldebug, linfo, lwarn};
+use crate::{ldebug, lerror, linfo, lwarn};
 use byteorder::{ByteOrder, LittleEndian};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -36,11 +36,21 @@ pub fn resolve_configured_target(dc: i32, is_media: bool) -> Option<String> {
     None
 }
 
-pub fn resolve_fallback_target(dc: i32, _is_media: bool) -> String {
+pub fn resolve_fallback_target(dc: i32, is_media: bool) -> String {
+    if let Some(configured) = resolve_configured_target(dc, is_media) {
+        return configured;
+    }
     DC_DEFAULT_IPS
         .get(&dc)
         .map(|s| s.to_string())
         .unwrap_or_default()
+}
+
+fn record_route_failure(dc: i32, is_media: bool, reason: &str) {
+    let message = format!("DC{}{}: {}", dc, media_tag(is_media), reason);
+    STATS.connection_failures.fetch_add(1, Ordering::Relaxed);
+    *LAST_TRANSPORT_ERROR.write() = message.clone();
+    lerror!(" {}", message);
 }
 
 pub fn ws_domains(dc: i32, is_media: bool) -> Vec<String> {
@@ -567,7 +577,15 @@ pub async fn tcp_fallback(
     let mut remote =
         match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await {
             Ok(Ok(r)) => r,
-            _ => return false,
+            _ => {
+                lwarn!(
+                    " TCP connect failed DC{}{} -> {}",
+                    dc,
+                    media_tag(is_media),
+                    addr
+                );
+                return false;
+            }
         };
     let _ = remote.set_nodelay(true);
 
@@ -576,6 +594,11 @@ pub async fn tcp_fallback(
         .fetch_add(1, Ordering::Relaxed);
     linfo!(" DC{}{} подключен по TCP", dc, media_tag(is_media));
     if remote.write_all(init).await.is_err() {
+        lwarn!(
+            " TCP relayInit write failed DC{}{}",
+            dc,
+            media_tag(is_media)
+        );
         return false;
     }
     bridge_tcp(
@@ -774,7 +797,7 @@ pub async fn do_fallback(
                 ws.close().await;
                 // CF умер сразу после хендшейка — пробуем TCP на том же conn.
                 if !fallback_dst.is_empty() {
-                    return tcp_fallback(
+                    let recovered = tcp_fallback(
                         conn,
                         &fallback_dst,
                         443,
@@ -789,7 +812,16 @@ pub async fn do_fallback(
                         cancel_token,
                     )
                     .await;
+                    if !recovered {
+                        record_route_failure(dc, is_media, "CF relay and TCP fallback failed");
+                    }
+                    return recovered;
                 }
+                record_route_failure(
+                    dc,
+                    is_media,
+                    "CF relay failed and no TCP target is available",
+                );
                 return false;
             }
 
@@ -815,7 +847,7 @@ pub async fn do_fallback(
     }
 
     if !fallback_dst.is_empty() {
-        return tcp_fallback(
+        let recovered = tcp_fallback(
             conn,
             &fallback_dst,
             443,
@@ -830,8 +862,13 @@ pub async fn do_fallback(
             cancel_token,
         )
         .await;
+        if !recovered {
+            record_route_failure(dc, is_media, "all CF and TCP routes failed");
+        }
+        return recovered;
     }
 
+    record_route_failure(dc, is_media, "no CF or TCP route is available");
     false
 }
 
@@ -977,6 +1014,24 @@ pub async fn handle_client(
     let now = now_unix_f64();
 
     let splitter = MsgSplitter::new(&relay_init, proto);
+
+    if CFPROXY_ENABLED.load(Ordering::Relaxed) && CFPROXY_PRIORITY.load(Ordering::Relaxed) {
+        do_fallback(
+            conn,
+            &relay_init,
+            label,
+            dc,
+            is_media,
+            splitter,
+            &clt_decryptor,
+            &clt_encryptor,
+            &tg_encryptor,
+            &tg_decryptor,
+            cancel_token,
+        )
+        .await;
+        return;
+    }
 
     let target_opt = resolve_configured_target(dc, is_media);
     let dc_configured = target_opt.is_some();
