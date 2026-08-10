@@ -16,6 +16,7 @@ import java.security.MessageDigest
 data class UpdateInfo(
     val version: String,
     val apkUrl: String,
+    val releaseNotes: String = "",
 )
 
 object UpdateChecker {
@@ -48,13 +49,14 @@ object UpdateChecker {
         )
         val root = JSONObject(json)
         val latestVersion = root.optString("tag_name").trim().removePrefix("v")
+        val releaseNotes = root.optString("body").trim()
         val assets = root.getJSONArray("assets")
         for (i in 0 until assets.length()) {
             val asset = assets.getJSONObject(i)
             val name = asset.optString("name")
             val apkUrl = asset.optString("browser_download_url")
             if (name.endsWith(".apk", ignoreCase = true) && apkUrl.isNotBlank()) {
-                return if (isNewer(latestVersion, currentVersion)) UpdateInfo(latestVersion, apkUrl) else null
+                return if (isNewer(latestVersion, currentVersion)) UpdateInfo(latestVersion, apkUrl, releaseNotes) else null
             }
         }
         error("Latest GitHub release has no APK asset")

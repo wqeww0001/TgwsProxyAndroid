@@ -22,12 +22,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,7 +51,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Home
@@ -83,6 +85,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
@@ -106,6 +109,8 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -113,7 +118,21 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         requestNotificationPermission()
         requestStoragePermission()
-        setContent { TgwsProxyAndroidTheme(darkTheme = false) { ProxyScreen() } }
+        setContent {
+            val context = LocalContext.current
+            var themeMode by rememberSaveable {
+                mutableStateOf(AppThemeMode.from(context.getProxyPref(THEME_PREF, AppThemeMode.Light.name)))
+            }
+            TgwsProxyAndroidTheme(darkTheme = themeMode == AppThemeMode.Dark) {
+                ProxyScreen(
+                    themeMode = themeMode,
+                    onThemeModeChange = {
+                        themeMode = it
+                        context.saveProxyPref(THEME_PREF, it.name)
+                    },
+                )
+            }
+        }
     }
 
     private fun requestNotificationPermission() {
@@ -140,6 +159,27 @@ private enum class AppLanguage(val code: String) {
     Ru("ru"),
     En("en"),
 }
+
+private enum class AppThemeMode {
+    Light,
+    Dark,
+    Aurora,
+    Sunset;
+
+    companion object {
+        fun from(value: String): AppThemeMode = entries.firstOrNull { it.name == value } ?: Light
+    }
+}
+
+private enum class UpdateIntervalUnit(val minutes: Long) {
+    Minutes(1),
+    Hours(60),
+    Days(24 * 60),
+}
+
+private enum class LogCategory { General, Errors }
+
+private data class TelegramClient(val packageName: String, val label: String)
 
 private enum class AppTab {
     Home,
@@ -241,9 +281,9 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         wsPool = "Пул быстрых соединений",
         wsPoolHint = "Больше соединений — ниже задержка, но выше расход батареи",
         updateCheck = "Проверка обновлений",
-        requiredUpdate = "Обязательное обновление",
+        requiredUpdate = "Доступно обновление",
         working = "Работаю...",
-        installRequiredUpdate = "Установить обновление",
+        installRequiredUpdate = "Скачать и установить",
         checkForUpdate = "Проверить обновления",
         debugLog = "Лог отладки",
         noEventsYet = "Пока нет событий",
@@ -266,7 +306,7 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         updateFailed = "Ошибка обновления",
         autoUpdates = "Автообновления",
         autoUpdatesEnabled = "Автопроверка включена",
-        autoUpdatesWarning = "Отключать автообновления не стоит: через них приходят обязательные исправления прокси и безопасности. Но если нужно, отключить можно.",
+        autoUpdatesWarning = "Автопроверка отключена. Прокси продолжит работать, обновления можно проверять вручную.",
         batteryProtection = "Работа в фоне",
         batteryRestricted = "Система может принудительно закрыть прокси",
         batteryUnrestricted = "Ограничения батареи отключены",
@@ -300,9 +340,9 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         wsPool = "Fast connection pool",
         wsPoolHint = "More connections reduce latency but use more battery",
         updateCheck = "Update check",
-        requiredUpdate = "Required update",
+        requiredUpdate = "Update available",
         working = "Working...",
-        installRequiredUpdate = "Install required update",
+        installRequiredUpdate = "Download and install",
         checkForUpdate = "Check for update",
         debugLog = "Debug log",
         noEventsYet = "No events yet",
@@ -325,7 +365,7 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
         updateFailed = "Update failed",
         autoUpdates = "Auto updates",
         autoUpdatesEnabled = "Auto check enabled",
-        autoUpdatesWarning = "Disabling auto updates is not recommended: required proxy and security fixes arrive through them. You can still disable it.",
+        autoUpdatesWarning = "Auto check is disabled. The proxy will keep working and updates can be checked manually.",
         batteryProtection = "Background operation",
         batteryRestricted = "The system may force-stop the proxy",
         batteryUnrestricted = "Battery restrictions are disabled",
@@ -340,7 +380,10 @@ private fun strings(language: AppLanguage): UiStrings = when (language) {
 }
 
 @Composable
-fun ProxyScreen() {
+private fun ProxyScreen(
+    themeMode: AppThemeMode = AppThemeMode.Light,
+    onThemeModeChange: (AppThemeMode) -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Home) }
@@ -363,9 +406,21 @@ fun ProxyScreen() {
     }
     var updateMessage by remember(language) { mutableStateOf("${text.currentVersion}: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
-    var requiredUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+    var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
     var autoUpdateEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_UPDATE_ENABLED_PREF, true)) }
-    var autoUpdateMinutes by rememberSaveable { mutableIntStateOf(context.getProxyPref(AUTO_UPDATE_INTERVAL_PREF, DEFAULT_AUTO_UPDATE_MINUTES.toString()).toIntOrNull()?.coerceIn(15, 24 * 60) ?: DEFAULT_AUTO_UPDATE_MINUTES) }
+    var autoUpdateValue by rememberSaveable {
+        mutableIntStateOf(context.getProxyPref(AUTO_UPDATE_VALUE_PREF, "1").toIntOrNull()?.coerceIn(1, 999) ?: 1)
+    }
+    var autoUpdateUnit by rememberSaveable {
+        mutableStateOf(
+            UpdateIntervalUnit.entries.firstOrNull {
+                it.name == context.getProxyPref(AUTO_UPDATE_UNIT_PREF, UpdateIntervalUnit.Hours.name)
+            } ?: UpdateIntervalUnit.Hours,
+        )
+    }
+    var autoStartProxy by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_START_PROXY_PREF, false)) }
+    var telegramClients by remember { mutableStateOf(emptyList<TelegramClient>()) }
+    var showTelegramClientDialog by remember { mutableStateOf(false) }
     var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
     var showSplash by rememberSaveable { mutableStateOf(true) }
     var batteryUnrestricted by remember { mutableStateOf(context.isIgnoringBatteryOptimizations()) }
@@ -374,31 +429,39 @@ fun ProxyScreen() {
     fun runUpdateCheck(manual: Boolean) {
         if (updateBusy) return
         updateBusy = true
-        if (manual) updateMessage = if (requiredUpdate != null) text.downloadingRequiredUpdate else text.checkingGithub
+        if (manual) updateMessage = text.checkingGithub
         scope.launch {
             val result = runCatching {
                 val current = UpdateChecker.currentVersion(context)
-                val update = requiredUpdate ?: withContext(Dispatchers.IO) {
+                val update = withContext(Dispatchers.IO) {
                     UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
                 }
                 if (update == null) {
+                    availableUpdate = null
                     "${text.noUpdateFound}: $current"
                 } else {
-                    requiredUpdate = update
-                    context.stopService(Intent(context, ProxyService::class.java))
-                    proxyStatus = ProxyStatus(false)
-                    context.notifyRequiredUpdate(update, text)
-                    if (manual) {
-                        updateMessage = "${text.downloading} ${update.version}..."
-                        val apk = withContext(Dispatchers.IO) { UpdateChecker.downloadApk(context, update) }
-                        UpdateChecker.installApk(context, apk)
-                        "${text.installerOpened} ${update.version}"
-                    } else {
-                        "${text.requiredUpdate} ${update.version}. ${text.installToContinue}"
-                    }
+                    val shouldNotify = availableUpdate?.version != update.version
+                    availableUpdate = update
+                    if (!manual && shouldNotify) context.notifyAvailableUpdate(update, text)
+                    if (language == AppLanguage.Ru) "Доступно обновление ${update.version}" else "Update ${update.version} is available"
                 }
             }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
             updateMessage = result
+            updateBusy = false
+        }
+    }
+
+    fun installAvailableUpdate() {
+        val update = availableUpdate ?: return
+        if (updateBusy) return
+        updateBusy = true
+        updateMessage = "${text.downloading} ${update.version}..."
+        scope.launch {
+            updateMessage = runCatching {
+                val apk = withContext(Dispatchers.IO) { UpdateChecker.downloadApk(context, update) }
+                UpdateChecker.installApk(context, apk)
+                "${text.installerOpened} ${update.version}"
+            }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
             updateBusy = false
         }
     }
@@ -423,12 +486,34 @@ fun ProxyScreen() {
         }
     }
 
-    LaunchedEffect(autoUpdateEnabled, autoUpdateMinutes, language) {
+    LaunchedEffect(autoUpdateEnabled, autoUpdateValue, autoUpdateUnit, language) {
         if (!autoUpdateEnabled) return@LaunchedEffect
         while (isActive) {
             runUpdateCheck(manual = false)
-            delay(autoUpdateMinutes * 60_000L)
+            delay((autoUpdateValue.toLong() * autoUpdateUnit.minutes * 60_000L).coerceAtMost(365L * 24 * 60 * 60_000L))
         }
+    }
+
+    if (showTelegramClientDialog) {
+        AlertDialog(
+            onDismissRequest = { showTelegramClientDialog = false },
+            title = { Text(if (language == AppLanguage.Ru) "Выберите Telegram" else "Choose Telegram app") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    telegramClients.forEach { client ->
+                        TextButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                context.saveProxyPref(TELEGRAM_CLIENT_PREF, client.packageName)
+                                context.openTelegram(link, client.packageName)
+                                showTelegramClientDialog = false
+                            },
+                        ) { Text(client.label) }
+                    }
+                }
+            },
+            confirmButton = {},
+        )
     }
 
     if (showDisableAutoUpdateWarning) {
@@ -473,16 +558,9 @@ fun ProxyScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.background,
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f),
-                            MaterialTheme.colorScheme.background,
-                        ),
-                    ),
-                ),
+                .background(appBackgroundBrush(themeMode)),
         ) {
+            BackgroundOrbs(themeMode)
             Column(
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -494,7 +572,6 @@ fun ProxyScreen() {
                         link = link,
                         logs = logLines,
                         cfEnabled = cfEnabled,
-                        requiredUpdate = requiredUpdate != null,
                         onStart = {
                             context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize)
                             proxyStatus = ProxyStatus(isStarting = true)
@@ -507,7 +584,20 @@ fun ProxyScreen() {
                             context.copyToClipboard(link)
                             Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
                         },
-                        onOpenTelegram = { context.startActivity(Intent(Intent.ACTION_VIEW, link.toUri())) },
+                        onOpenTelegram = {
+                            val savedPackage = context.getProxyPref(TELEGRAM_CLIENT_PREF, "")
+                            if (!context.openTelegram(link, savedPackage)) {
+                                telegramClients = context.findTelegramClients(link)
+                                when (telegramClients.size) {
+                                    0 -> Toast.makeText(context, if (language == AppLanguage.Ru) "Telegram не найден" else "Telegram app not found", Toast.LENGTH_SHORT).show()
+                                    1 -> {
+                                        context.saveProxyPref(TELEGRAM_CLIENT_PREF, telegramClients.first().packageName)
+                                        context.openTelegram(link, telegramClients.first().packageName)
+                                    }
+                                    else -> showTelegramClientDialog = true
+                                }
+                            }
+                        },
                     )
                     AppTab.Logs -> LogsPage(
                         text = text,
@@ -554,9 +644,12 @@ fun ProxyScreen() {
                         },
                         updateMessage = updateMessage,
                         updateBusy = updateBusy,
-                        requiredUpdate = requiredUpdate != null,
+                        availableUpdate = availableUpdate,
                         autoUpdateEnabled = autoUpdateEnabled,
-                        autoUpdateMinutes = autoUpdateMinutes,
+                        autoUpdateValue = autoUpdateValue,
+                        autoUpdateUnit = autoUpdateUnit,
+                        autoStartProxy = autoStartProxy,
+                        themeMode = themeMode,
                         batteryUnrestricted = batteryUnrestricted,
                         onBatterySettings = { context.requestBatteryOptimizationExemption() },
                         onAutoUpdateEnabledChange = { enabled ->
@@ -567,11 +660,25 @@ fun ProxyScreen() {
                                 context.saveProxyPref(AUTO_UPDATE_ENABLED_PREF, true)
                             }
                         },
-                        onAutoUpdateMinutesChange = {
-                            autoUpdateMinutes = it
-                            context.saveProxyPref(AUTO_UPDATE_INTERVAL_PREF, it.toString())
+                        onAutoUpdateValueChange = {
+                            autoUpdateValue = it.coerceIn(1, 999)
+                            context.saveProxyPref(AUTO_UPDATE_VALUE_PREF, autoUpdateValue.toString())
+                        },
+                        onAutoUpdateUnitChange = {
+                            autoUpdateUnit = it
+                            context.saveProxyPref(AUTO_UPDATE_UNIT_PREF, it.name)
+                        },
+                        onAutoStartProxyChange = {
+                            autoStartProxy = it
+                            context.saveProxyPref(AUTO_START_PROXY_PREF, it)
+                        },
+                        onThemeModeChange = onThemeModeChange,
+                        onForgetTelegramClient = {
+                            context.saveProxyPref(TELEGRAM_CLIENT_PREF, "")
+                            Toast.makeText(context, if (language == AppLanguage.Ru) "Выбор Telegram сброшен" else "Telegram choice reset", Toast.LENGTH_SHORT).show()
                         },
                         onCheckUpdate = { runUpdateCheck(manual = true) },
+                        onInstallUpdate = { installAvailableUpdate() },
                     )
                     AppTab.Help -> HelpPage(language)
                 }
@@ -579,6 +686,29 @@ fun ProxyScreen() {
         }
     }
 }
+
+@Composable
+private fun appBackgroundBrush(mode: AppThemeMode): Brush = when (mode) {
+    AppThemeMode.Light -> Brush.verticalGradient(listOf(Color(0xFFFAF7FC), Color(0xFFF1ECFA), Color(0xFFFBF8FD)))
+    AppThemeMode.Dark -> Brush.verticalGradient(listOf(Color(0xFF080B12), Color(0xFF11172A), Color(0xFF090C14)))
+    AppThemeMode.Aurora -> Brush.linearGradient(listOf(Color(0xFFE8FFF7), Color(0xFFE6E5FF), Color(0xFFFFF1FA)))
+    AppThemeMode.Sunset -> Brush.linearGradient(listOf(Color(0xFFFFF0E3), Color(0xFFF6E5FF), Color(0xFFE7F4FF)))
+}
+
+@Composable
+private fun BackgroundOrbs(mode: AppThemeMode) {
+    val colors = when (mode) {
+        AppThemeMode.Light -> listOf(Color(0xFFB8A9FF), Color(0xFFFFC6E3))
+        AppThemeMode.Dark -> listOf(Color(0xFF28577D), Color(0xFF563B78))
+        AppThemeMode.Aurora -> listOf(Color(0xFF6BE6C2), Color(0xFFA48CFF))
+        AppThemeMode.Sunset -> listOf(Color(0xFFFF975F), Color(0xFFDA88FF))
+    }
+    Canvas(Modifier.fillMaxSize()) {
+        drawCircle(colors[0].copy(alpha = 0.22f), radius = size.minDimension * 0.48f, center = Offset(size.width * 0.92f, size.height * 0.08f))
+        drawCircle(colors[1].copy(alpha = 0.18f), radius = size.minDimension * 0.55f, center = Offset(size.width * 0.05f, size.height * 0.72f))
+    }
+}
+
 @Composable
 private fun BottomTabs(
     selectedTab: AppTab,
@@ -635,7 +765,6 @@ private fun HomePage(
     link: String,
     logs: List<String>,
     cfEnabled: Boolean,
-    requiredUpdate: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onCopyLink: () -> Unit,
@@ -647,7 +776,6 @@ private fun HomePage(
         text = text,
         status = status,
         link = link,
-        requiredUpdate = requiredUpdate,
         stats = stats,
         cfEnabled = cfEnabled,
         onStart = onStart,
@@ -673,13 +801,27 @@ private fun LogsPage(
     logs: List<String>,
     onDownload: () -> Unit,
 ) {
-    PageTitle(text.debugLog, if (logs.isEmpty()) text.noEventsYet else "${logs.size} lines")
+    var category by rememberSaveable { mutableStateOf(LogCategory.General) }
+    val visibleLogs = remember(logs, category) {
+        if (category == LogCategory.Errors) logs.filter { " E " in it || " W " in it || "ERROR" in it || "WARN" in it } else logs
+    }
+    PageTitle(text.debugLog, if (visibleLogs.isEmpty()) text.noEventsYet else "${visibleLogs.size} lines")
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        LogCategory.entries.forEach { item ->
+            val label = when (item) {
+                LogCategory.General -> if (text.start == "Запустить") "Общие" else "General"
+                LogCategory.Errors -> if (text.start == "Запустить") "Ошибки" else "Errors"
+            }
+            if (category == item) Button(modifier = Modifier.weight(1f), onClick = { category = item }) { ButtonText(label) }
+            else OutlinedButton(modifier = Modifier.weight(1f), onClick = { category = item }) { ButtonText(label) }
+        }
+    }
     FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = onDownload) {
         Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.size(8.dp))
         ButtonText(text.downloadLogs)
     }
-    LogsCard(text, logs)
+    LogsCard(text, visibleLogs)
 }
 
 @Composable
@@ -700,17 +842,26 @@ private fun SettingsPage(
     onPoolSizeChange: (Int) -> Unit,
     updateMessage: String,
     updateBusy: Boolean,
-    requiredUpdate: Boolean,
+    availableUpdate: UpdateInfo?,
     autoUpdateEnabled: Boolean,
-    autoUpdateMinutes: Int,
+    autoUpdateValue: Int,
+    autoUpdateUnit: UpdateIntervalUnit,
+    autoStartProxy: Boolean,
+    themeMode: AppThemeMode,
     batteryUnrestricted: Boolean,
     onBatterySettings: () -> Unit,
     onAutoUpdateEnabledChange: (Boolean) -> Unit,
-    onAutoUpdateMinutesChange: (Int) -> Unit,
+    onAutoUpdateValueChange: (Int) -> Unit,
+    onAutoUpdateUnitChange: (UpdateIntervalUnit) -> Unit,
+    onAutoStartProxyChange: (Boolean) -> Unit,
+    onThemeModeChange: (AppThemeMode) -> Unit,
+    onForgetTelegramClient: () -> Unit,
     onCheckUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit,
 ) {
     PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(LocalContext.current))
     LanguageCard(text, language, onLanguageChange)
+    ThemePickerCard(language, themeMode, onThemeModeChange)
     SettingsCard(
         text = text,
         fakeTlsDomain = fakeTlsDomain,
@@ -727,17 +878,22 @@ private fun SettingsPage(
     AutoUpdateCard(
         text = text,
         enabled = autoUpdateEnabled,
-        minutes = autoUpdateMinutes,
+        value = autoUpdateValue,
+        unit = autoUpdateUnit,
         onEnabledChange = onAutoUpdateEnabledChange,
-        onMinutesChange = onAutoUpdateMinutesChange,
+        onValueChange = onAutoUpdateValueChange,
+        onUnitChange = onAutoUpdateUnitChange,
     )
+    AutoStartCard(language, autoStartProxy, onAutoStartProxyChange)
+    TelegramClientCard(language, onForgetTelegramClient)
     BatteryOptimizationCard(text, batteryUnrestricted, onBatterySettings)
     UpdateCard(
         text = text,
         message = updateMessage,
         busy = updateBusy,
-        required = requiredUpdate,
+        update = availableUpdate,
         onCheck = onCheckUpdate,
+        onInstall = onInstallUpdate,
     )
 }
 
@@ -746,7 +902,7 @@ private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOp
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.batteryProtection, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -769,7 +925,7 @@ private fun PoolSizeCard(text: UiStrings, poolSize: Int, enabled: Boolean, onPoo
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.wsPool, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -798,47 +954,51 @@ private fun PoolSizeCard(text: UiStrings, poolSize: Int, enabled: Boolean, onPoo
 @Composable
 private fun SplashScreen(text: UiStrings) {
     val infinite = rememberInfiniteTransition(label = "splash")
-    val scale by infinite.animateFloat(
-        initialValue = 0.94f,
-        targetValue = 1.05f,
-        animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
-        label = "mark-scale",
-    )
-    val alpha by infinite.animateFloat(
-        initialValue = 0.55f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
-        label = "mark-alpha",
+    val angle by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(animation = tween(1450, easing = LinearEasing)),
+        label = "orbit-angle",
     )
     Box(
-        modifier = Modifier.fillMaxSize().background(
-            Brush.radialGradient(
-                colors = listOf(
-                    MaterialTheme.colorScheme.secondaryContainer,
-                    MaterialTheme.colorScheme.background,
-                ),
-            ),
-        ),
+        modifier = Modifier.fillMaxSize().background(Color.Black),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Box(
-                modifier = Modifier
-                    .size(112.dp)
-                    .graphicsLayer(scaleX = scale, scaleY = scale, alpha = alpha)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.size(176.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                    contentDescription = null,
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(108.dp),
-                )
+                Canvas(Modifier.fillMaxSize()) {
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val orbit = size.minDimension * 0.39f
+                    repeat(5) { index ->
+                        val degrees = angle - index * 13f
+                        val radians = Math.toRadians(degrees.toDouble())
+                        drawCircle(
+                            color = Color(0xFFFF5A1F).copy(alpha = 1f - index * 0.15f),
+                            radius = size.minDimension * (0.045f - index * 0.003f),
+                            center = Offset(
+                                center.x + cos(radians).toFloat() * orbit,
+                                center.y + sin(radians).toFloat() * orbit,
+                            ),
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier.size(88.dp).clip(CircleShape).background(Color(0xFF129ED9)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_telegram_logo),
+                        contentDescription = null,
+                        tint = Color.Unspecified,
+                        modifier = Modifier.size(55.dp),
+                    )
+                }
             }
-            Text("TG WS Proxy", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-            Text(text.splashSubtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("TG WS Proxy", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold, color = Color.White)
+            Text(text.splashSubtitle, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFAAAAB3))
         }
     }
 }
@@ -902,7 +1062,7 @@ private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChang
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.Ru, onClick = { onLanguageChange(AppLanguage.Ru) }) {
@@ -916,18 +1076,91 @@ private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChang
 }
 
 @Composable
+private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.38f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (language == AppLanguage.Ru) "Оформление" else "Appearance", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            AppThemeMode.entries.chunked(2).forEach { row ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { mode ->
+                        val label = when (mode) {
+                            AppThemeMode.Light -> if (language == AppLanguage.Ru) "Светлая" else "Light"
+                            AppThemeMode.Dark -> if (language == AppLanguage.Ru) "Тёмная" else "Dark"
+                            AppThemeMode.Aurora -> if (language == AppLanguage.Ru) "Аврора" else "Aurora"
+                            AppThemeMode.Sunset -> if (language == AppLanguage.Ru) "Закат" else "Sunset"
+                        }
+                        if (selected == mode) Button(modifier = Modifier.weight(1f), onClick = { onSelect(mode) }) { ButtonText(label) }
+                        else OutlinedButton(modifier = Modifier.weight(1f), onClick = { onSelect(mode) }) { ButtonText(label) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoStartCard(language: AppLanguage, enabled: Boolean, onEnabledChange: (Boolean) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
+    ) {
+        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(if (language == AppLanguage.Ru) "Автозапуск прокси" else "Proxy auto-start", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (language == AppLanguage.Ru) "Запускать после перезагрузки телефона" else "Start after the phone reboots",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = onEnabledChange)
+        }
+    }
+}
+
+@Composable
+private fun TelegramClientCard(language: AppLanguage, onForget: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(if (language == AppLanguage.Ru) "Приложение Telegram" else "Telegram application", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (language == AppLanguage.Ru) "Выбор клиента запоминается. Нажмите ниже, чтобы выбрать заново." else "Your client choice is remembered. Reset it to choose again.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onForget) {
+                ButtonText(if (language == AppLanguage.Ru) "Выбрать заново" else "Choose again")
+            }
+        }
+    }
+}
+
+@Composable
 private fun AutoUpdateCard(
     text: UiStrings,
     enabled: Boolean,
-    minutes: Int,
+    value: Int,
+    unit: UpdateIntervalUnit,
     onEnabledChange: (Boolean) -> Unit,
-    onMinutesChange: (Int) -> Unit,
+    onValueChange: (Int) -> Unit,
+    onUnitChange: (UpdateIntervalUnit) -> Unit,
 ) {
-    val options = listOf(30, 60, 180, 360)
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -942,14 +1175,28 @@ private fun AutoUpdateCard(
                 Switch(checked = enabled, onCheckedChange = onEnabledChange)
             }
             Text(text.updateInterval, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = value.toString(),
+                enabled = enabled,
+                singleLine = true,
+                label = { Text(if (text.start == "Запустить") "Проверять раз в" else "Check every") },
+                onValueChange = { input ->
+                    input.filter(Char::isDigit).take(3).toIntOrNull()?.let(onValueChange)
+                },
+            )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                options.forEach { option ->
-                    val label = if (option < 60) "${option}${text.minutesShort}" else "${option / 60}${text.hoursShort}"
-                    val selected = minutes == option
+                UpdateIntervalUnit.entries.forEach { option ->
+                    val label = when (option) {
+                        UpdateIntervalUnit.Minutes -> if (text.start == "Запустить") "Минуты" else "Minutes"
+                        UpdateIntervalUnit.Hours -> if (text.start == "Запустить") "Часы" else "Hours"
+                        UpdateIntervalUnit.Days -> if (text.start == "Запустить") "Дни" else "Days"
+                    }
+                    val selected = unit == option
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
                         enabled = enabled,
-                        onClick = { onMinutesChange(option) },
+                        onClick = { onUnitChange(option) },
                     ) {
                         ButtonText(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                     }
@@ -964,7 +1211,7 @@ private fun HelpCategory(title: String, items: List<Pair<String, String>>) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1068,28 +1315,43 @@ private fun UpdateCard(
     text: UiStrings,
     message: String,
     busy: Boolean,
-    required: Boolean,
+    update: UpdateInfo?,
     onCheck: () -> Unit,
+    onInstall: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                if (required) text.requiredUpdate else text.updateCheck,
+                if (update != null) {
+                    if (text.start == "Запустить") "Доступно обновление ${update.version}" else "Update ${update.version} available"
+                } else text.updateCheck,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = if (required) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                color = MaterialTheme.colorScheme.onSurface,
             )
-            Button(modifier = Modifier.fillMaxWidth(), onClick = onCheck, enabled = !busy) {
-                ButtonText(
-                    when {
-                        busy -> text.working
-                        required -> text.installRequiredUpdate
-                        else -> text.checkForUpdate
-                    }
+            if (update != null && update.releaseNotes.isNotBlank()) {
+                Text(
+                    if (text.start == "Запустить") "Что изменилось" else "What's new",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(update.releaseNotes.take(1800), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Button(modifier = Modifier.fillMaxWidth(), onClick = if (update == null) onCheck else onInstall, enabled = !busy) {
+                ButtonText(if (busy) text.working else if (update != null) text.installRequiredUpdate else text.checkForUpdate)
+            }
+            if (update != null) {
+                OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onCheck, enabled = !busy) {
+                    ButtonText(text.checkForUpdate)
+                }
+                Text(
+                    if (text.start == "Запустить") "Обновление необязательное: прокси продолжит работать." else "The update is optional: the proxy remains available.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
             Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1131,7 +1393,6 @@ private fun ProxyHeroCard(
     text: UiStrings,
     status: ProxyStatus,
     link: String,
-    requiredUpdate: Boolean,
     stats: LatestStats,
     cfEnabled: Boolean,
     onStart: () -> Unit,
@@ -1142,7 +1403,7 @@ private fun ProxyHeroCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
@@ -1155,6 +1416,9 @@ private fun ProxyHeroCard(
                 modifier = Modifier
                     .size(142.dp)
                     .clip(CircleShape)
+                    .clickable(enabled = !status.isStarting) {
+                        if (status.isRunning) onStop() else onStart()
+                    }
                     .background(
                         Brush.verticalGradient(
                             listOf(Color(0xFF32B7EF), Color(0xFF0788C7)),
@@ -1181,11 +1445,9 @@ private fun ProxyHeroCard(
             )
             Button(
                 modifier = Modifier.fillMaxWidth(),
-                enabled = status.isRunning && !requiredUpdate,
+                enabled = status.isRunning,
                 onClick = onOpenTelegram,
             ) {
-                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.size(8.dp))
                 ButtonText(text.openInTelegram)
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1216,19 +1478,11 @@ private fun ProxyHeroCard(
                     }
                 }
             }
-            if (status.isRunning || status.isStarting) {
-                OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onStop) {
-                    Icon(Icons.Rounded.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(8.dp))
-                    ButtonText(text.stop)
-                }
-            } else {
-                Button(modifier = Modifier.fillMaxWidth(), enabled = !requiredUpdate && !status.isStarting, onClick = onStart) {
-                    Icon(Icons.Rounded.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(8.dp))
-                    ButtonText(text.start)
-                }
-            }
+            Text(
+                if (status.isRunning) text.stop else text.start,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -1308,7 +1562,7 @@ private fun ConnectionCard(text: UiStrings, secret: String, link: String, status
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.localEndpoint, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1354,7 +1608,7 @@ private fun SettingsCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.proxyOptions, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1494,6 +1748,28 @@ private fun Context.copyToClipboard(text: String) {
     clipboard.setPrimaryClip(ClipData.newPlainText("Telegram proxy link", text))
 }
 
+private fun Context.findTelegramClients(link: String): List<TelegramClient> {
+    val intent = Intent(Intent.ACTION_VIEW, link.toUri())
+    val activities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        packageManager.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()))
+    } else {
+        @Suppress("DEPRECATION")
+        packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+    }
+    return activities
+        .map { TelegramClient(it.activityInfo.packageName, it.loadLabel(packageManager).toString()) }
+        .distinctBy { it.packageName }
+        .sortedBy { it.label.lowercase() }
+}
+
+private fun Context.openTelegram(link: String, packageName: String): Boolean {
+    if (packageName.isBlank()) return false
+    return runCatching {
+        startActivity(Intent(Intent.ACTION_VIEW, link.toUri()).setPackage(packageName))
+        true
+    }.getOrDefault(false)
+}
+
 private fun Context.saveLogsToDownloads(): Boolean {
     val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
     val fileName = "tgwsproxy-logs-$timestamp.txt"
@@ -1520,7 +1796,7 @@ private fun Context.saveLogsToDownloads(): Boolean {
     }.getOrDefault(false)
 }
 
-private fun Context.notifyRequiredUpdate(update: UpdateInfo, text: UiStrings) {
+private fun Context.notifyAvailableUpdate(update: UpdateInfo, text: UiStrings) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         if (!granted) return
@@ -1542,8 +1818,8 @@ private fun Context.notifyRequiredUpdate(update: UpdateInfo, text: UiStrings) {
     )
     val notification = NotificationCompat.Builder(this, UPDATE_CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_notification)
-        .setContentTitle("${text.requiredUpdate} ${update.version}")
-        .setContentText(text.installToContinue)
+        .setContentTitle(if (text.start == "Запустить") "Доступно обновление ${update.version}" else "Update ${update.version} available")
+        .setContentText(if (text.start == "Запустить") "Можно установить в удобное время" else "Install whenever it is convenient")
         .setContentIntent(pendingIntent)
         .setAutoCancel(true)
         .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -1555,10 +1831,13 @@ private fun Context.notifyRequiredUpdate(update: UpdateInfo, text: UiStrings) {
 private const val UPDATE_CHANNEL_ID = "updates"
 private const val UPDATE_NOTIFICATION_ID = 2001
 private const val LANGUAGE_PREF = "ui_language"
+private const val THEME_PREF = "theme_mode"
+internal const val AUTO_START_PROXY_PREF = "auto_start_proxy"
+private const val TELEGRAM_CLIENT_PREF = "telegram_client_package"
 private const val AUTO_UPDATE_ENABLED_PREF = "auto_update_enabled"
-private const val AUTO_UPDATE_INTERVAL_PREF = "auto_update_interval_minutes"
-private const val DEFAULT_AUTO_UPDATE_MINUTES = 30
-private const val PROXY_PREFS = "proxy"
+private const val AUTO_UPDATE_VALUE_PREF = "auto_update_interval_value"
+private const val AUTO_UPDATE_UNIT_PREF = "auto_update_interval_unit"
+internal const val PROXY_PREFS = "proxy"
 
 @Preview(showBackground = true)
 @Composable
