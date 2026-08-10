@@ -589,7 +589,9 @@ private fun ProxyScreen(
                             if (!context.openTelegram(link, savedPackage)) {
                                 telegramClients = context.findTelegramClients(link)
                                 when (telegramClients.size) {
-                                    0 -> Toast.makeText(context, if (language == AppLanguage.Ru) "Telegram не найден" else "Telegram app not found", Toast.LENGTH_SHORT).show()
+                                    0 -> if (!context.openTelegramWithSystemChooser(link)) {
+                                        Toast.makeText(context, if (language == AppLanguage.Ru) "Telegram не найден" else "Telegram app not found", Toast.LENGTH_SHORT).show()
+                                    }
                                     1 -> {
                                         context.saveProxyPref(TELEGRAM_CLIENT_PREF, telegramClients.first().packageName)
                                         context.openTelegram(link, telegramClients.first().packageName)
@@ -1769,6 +1771,12 @@ private fun Context.openTelegram(link: String, packageName: String): Boolean {
         true
     }.getOrDefault(false)
 }
+
+private fun Context.openTelegramWithSystemChooser(link: String): Boolean = runCatching {
+    val intent = Intent(Intent.ACTION_VIEW, link.toUri())
+    startActivity(Intent.createChooser(intent, null))
+    true
+}.getOrDefault(false)
 
 private fun Context.saveLogsToDownloads(): Boolean {
     val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
