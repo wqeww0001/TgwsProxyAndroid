@@ -1,4 +1,4 @@
-﻿package com.tgwsproxy.android
+package com.tgwsproxy.android
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -48,6 +48,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material.icons.Icons
@@ -101,7 +102,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.tgwsproxy.android.proxy.ProxyLogger
-import com.tgwsproxy.android.ui.theme.TgwsProxyAndroidTheme
+import com.tgwsproxy.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -547,7 +548,103 @@ private fun ProxyScreen(
     val pagerState = rememberPagerState(pageCount = { AppTab.entries.size })
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        containerColor = Color.Transparent,
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.20f)),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.primary),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("TG", fontWeight = FontWeight.Bold, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Column {
+                            Text("TgwsProxy", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text("127.0.0.1:1443", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (proxyStatus.isRunning) SignalMint
+                                    else if (proxyStatus.isStarting) SignalAmber
+                                    else MaterialTheme.colorScheme.outline,
+                                ),
+                        )
+                        Text(
+                            if (proxyStatus.isRunning) (if (language == AppLanguage.Ru) "Активен" else "Active")
+                            else if (proxyStatus.isStarting) (if (language == AppLanguage.Ru) "Запуск..." else "Starting...")
+                            else (if (language == AppLanguage.Ru) "Остановлен" else "Stopped"),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = if (proxyStatus.isRunning) SignalMint else if (proxyStatus.isStarting) SignalAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        bottomBar = {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.20f)),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceAround,
+                ) {
+                    AppTab.entries.forEachIndexed { index, tab ->
+                        val isSelected = pagerState.currentPage == index
+                        val tabName = when (tab) {
+                            AppTab.Home -> if (language == AppLanguage.Ru) "Главная" else "Home"
+                            AppTab.Settings -> if (language == AppLanguage.Ru) "Настройки" else "Settings"
+                            AppTab.Logs -> if (language == AppLanguage.Ru) "Журнал" else "Logs"
+                            AppTab.Help -> if (language == AppLanguage.Ru) "Справка" else "Help"
+                        }
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { scope.launch { pagerState.animateScrollToPage(index) } },
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text(
+                                text = tabName,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
     ) { innerPadding ->
         HorizontalPager(
             state = pagerState,
@@ -556,10 +653,9 @@ private fun ProxyScreen(
             key = { AppTab.entries[it].name },
         ) { page ->
             Box(modifier = Modifier.fillMaxSize().background(appBackgroundBrush(themeMode))) {
-                BackgroundOrbs(themeMode)
                 Column(
-                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     when (AppTab.entries[page]) {
                     AppTab.Home -> HomePage(
@@ -697,32 +793,15 @@ private fun ProxyScreen(
 
 @Composable
 private fun appBackgroundBrush(mode: AppThemeMode): Brush = when (mode) {
-    AppThemeMode.Light -> Brush.verticalGradient(listOf(Color(0xFFFAF7FC), Color(0xFFF1ECFA), Color(0xFFFBF8FD)))
-    AppThemeMode.Dark -> Brush.verticalGradient(listOf(Color(0xFF080B12), Color(0xFF11172A), Color(0xFF090C14)))
-    AppThemeMode.Aurora -> Brush.linearGradient(listOf(Color(0xFFE8FFF7), Color(0xFFE6E5FF), Color(0xFFFFF1FA)))
-    AppThemeMode.Sunset -> Brush.linearGradient(listOf(Color(0xFFFFF0E3), Color(0xFFF6E5FF), Color(0xFFE7F4FF)))
+    AppThemeMode.Light -> Brush.verticalGradient(listOf(Color(0xFFF4F5F8), Color(0xFFECEFF4)))
+    AppThemeMode.Dark -> Brush.verticalGradient(listOf(Color(0xFF111215), Color(0xFF16181F)))
+    AppThemeMode.Aurora -> Brush.verticalGradient(listOf(Color(0xFF0F1517), Color(0xFF12191F)))
+    AppThemeMode.Sunset -> Brush.verticalGradient(listOf(Color(0xFF161214), Color(0xFF18151D)))
 }
 
 @Composable
 private fun BackgroundOrbs(mode: AppThemeMode) {
-    val colors = when (mode) {
-        AppThemeMode.Light -> listOf(Color(0xFFB8A9FF), Color(0xFFFFC6E3))
-        AppThemeMode.Dark -> listOf(Color(0xFF28577D), Color(0xFF563B78))
-        AppThemeMode.Aurora -> listOf(Color(0xFF6BE6C2), Color(0xFFA48CFF))
-        AppThemeMode.Sunset -> listOf(Color(0xFFFF975F), Color(0xFFDA88FF))
-    }
-    val motion = rememberInfiniteTransition(label = "liquid-background")
-    val drift by motion.animateFloat(
-        initialValue = -0.06f,
-        targetValue = 0.08f,
-        animationSpec = infiniteRepeatable(animation = tween(8_000), repeatMode = RepeatMode.Reverse),
-        label = "liquid-drift",
-    )
-    Canvas(Modifier.fillMaxSize()) {
-        drawCircle(colors[0].copy(alpha = 0.25f), radius = size.minDimension * 0.52f, center = Offset(size.width * (0.90f + drift), size.height * (0.10f - drift * 0.5f)))
-        drawCircle(colors[1].copy(alpha = 0.21f), radius = size.minDimension * 0.58f, center = Offset(size.width * (0.06f - drift), size.height * (0.70f + drift)))
-        drawCircle(Color.White.copy(alpha = if (mode == AppThemeMode.Dark) 0.04f else 0.18f), radius = size.minDimension * 0.32f, center = Offset(size.width * (0.42f + drift), size.height * 0.38f))
-    }
+    // 0% background overhead - clean minimal theme
 }
 
 @Composable
@@ -738,7 +817,7 @@ private fun HomePage(
     onOpenTelegram: () -> Unit,
 ) {
     val stats = remember(logs) { latestStats(logs) }
-    PageTitle(if (text.start == "Запустить") "Запуск" else "Proxy", "TG WS Proxy · 127.0.0.1:1443")
+    PageTitle(if (text.start == "Запустить") "Главная" else "Home", "127.0.0.1:1443 · MTProto WS Proxy")
     ProxyHeroCard(
         text = text,
         status = status,
@@ -751,13 +830,12 @@ private fun HomePage(
         onCopyLink = onCopyLink,
     )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        StatTile("CF", stats.cf, Modifier.weight(1f))
-        StatTile("Active", stats.active, Modifier.weight(1f))
-        StatTile("Errors", stats.errors, Modifier.weight(1f), color = getErrorColor(stats.errors))
+        StatTile(if (text.start == "Запустить") "Пул WebSocket" else "WS Pool", "${stats.ws} active", Modifier.weight(1f))
+        StatTile(if (text.start == "Запустить") "Cloudflare" else "Cloudflare", if (cfEnabled) "Priority" else "Off", Modifier.weight(1f), color = if (cfEnabled) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant)
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        StatTile("Up", stats.up, Modifier.weight(1f), compact = true)
-        StatTile("Down", stats.down, Modifier.weight(1f), compact = true)
+        StatTile(if (text.start == "Запустить") "Сессии" else "Active", stats.active, Modifier.weight(1f))
+        StatTile(if (text.start == "Запустить") "Ошибки" else "Errors", stats.errors, Modifier.weight(1f), color = getErrorColor(stats.errors))
     }
     LogsCard(text, logs.takeLast(6))
 }
@@ -868,39 +946,22 @@ private fun SettingsPage(
     )
 }
 
-private fun Modifier.liquidGlass(radius: Dp = 24.dp): Modifier = this
-    .shadow(
-        elevation = 12.dp,
-        shape = RoundedCornerShape(radius),
-        clip = false,
-        ambientColor = Color(0x665B5797),
-        spotColor = Color(0x445B5797),
-    )
-    .drawWithCache {
-        val corner = CornerRadius(radius.toPx(), radius.toPx())
-        val stroke = 1.15.dp.toPx()
-        val highlight = Brush.linearGradient(
-            colors = listOf(Color.White.copy(alpha = 0.82f), Color.White.copy(alpha = 0.12f), Color(0xFF8D86D8).copy(alpha = 0.38f)),
-        )
-        onDrawWithContent {
-            drawContent()
-            drawRoundRect(brush = highlight, cornerRadius = corner, style = Stroke(width = stroke))
-        }
-    }
+private fun Modifier.liquidGlass(radius: Dp = 16.dp): Modifier = this
 
 @Composable
 private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOpenSettings: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.batteryProtection, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 if (unrestricted) text.batteryUnrestricted else text.batteryRestricted,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (unrestricted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                color = if (unrestricted) SignalMint else MaterialTheme.colorScheme.error,
             )
             if (!unrestricted) {
                 FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = onOpenSettings) {
@@ -914,11 +975,12 @@ private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOp
 @Composable
 private fun PoolSizeCard(text: UiStrings, poolSize: Int, enabled: Boolean, onPoolSizeChange: (Int) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.wsPool, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(text.wsPoolHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -944,52 +1006,39 @@ private fun PoolSizeCard(text: UiStrings, poolSize: Int, enabled: Boolean, onPoo
 
 @Composable
 private fun SplashScreen(text: UiStrings) {
-    val infinite = rememberInfiniteTransition(label = "splash")
-    val angle by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(animation = tween(1450, easing = LinearEasing)),
-        label = "orbit-angle",
-    )
     Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
             Box(
-                modifier = Modifier.size(176.dp),
+                modifier = Modifier
+                    .size(80.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF0A84FF)),
                 contentAlignment = Alignment.Center,
             ) {
-                Canvas(Modifier.fillMaxSize()) {
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val orbit = size.minDimension * 0.39f
-                    repeat(5) { index ->
-                        val degrees = angle - index * 13f
-                        val radians = Math.toRadians(degrees.toDouble())
-                        drawCircle(
-                            color = Color(0xFFFF5A1F).copy(alpha = 1f - index * 0.15f),
-                            radius = size.minDimension * (0.045f - index * 0.003f),
-                            center = Offset(
-                                center.x + cos(radians).toFloat() * orbit,
-                                center.y + sin(radians).toFloat() * orbit,
-                            ),
-                        )
-                    }
-                }
-                Box(
-                    modifier = Modifier.size(88.dp).clip(CircleShape).background(Color(0xFF129ED9)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_telegram_logo),
-                        contentDescription = null,
-                        tint = Color.Unspecified,
-                        modifier = Modifier.size(55.dp),
-                    )
-                }
+                Icon(
+                    painter = painterResource(R.drawable.ic_telegram_logo),
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    modifier = Modifier.size(52.dp),
+                )
             }
-            Text("TG WS Proxy", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold, color = Color.White)
-            Text(text.splashSubtitle, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFAAAAB3))
+            Text(
+                "TG WS Proxy",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                text.splashSubtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -1051,9 +1100,10 @@ private fun PageTitle(title: String, subtitle: String) {
 @Composable
 private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChange: (AppLanguage) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.Ru, onClick = { onLanguageChange(AppLanguage.Ru) }) {
@@ -1069,10 +1119,10 @@ private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChang
 @Composable
 private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.38f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(if (language == AppLanguage.Ru) "Оформление" else "Appearance", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1097,10 +1147,10 @@ private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSel
 @Composable
 private fun AutoStartCard(language: AppLanguage, enabled: Boolean, onEnabledChange: (Boolean) -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -1119,10 +1169,10 @@ private fun AutoStartCard(language: AppLanguage, enabled: Boolean, onEnabledChan
 @Composable
 private fun TelegramClientCard(language: AppLanguage, onForget: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f)),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(if (language == AppLanguage.Ru) "Приложение Telegram" else "Telegram application", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1149,9 +1199,10 @@ private fun AutoUpdateCard(
     onUnitChange: (UpdateIntervalUnit) -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1200,9 +1251,10 @@ private fun AutoUpdateCard(
 @Composable
 private fun HelpCategory(title: String, items: List<Pair<String, String>>) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1230,18 +1282,18 @@ private fun ButtonText(label: String, color: Color = Color.Unspecified) {
 private fun StatTile(label: String, value: String, modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.primary, compact: Boolean = false) {
     Card(
         modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.16f)),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
             Text(
                 value,
                 style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall,
                 fontFamily = FontFamily.Monospace,
                 color = color,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Bold,
             )
         }
     }
@@ -1250,16 +1302,16 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
 @Composable
 private fun ControlPanel(text: UiStrings, running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(28.dp),
-        shape = RoundedCornerShape(28.dp),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (running) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f) else MaterialTheme.colorScheme.surface,
+            containerColor = if (running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
         ),
-        border = BorderStroke(1.dp, if (running) MaterialTheme.colorScheme.primary.copy(alpha = 0.32f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+        border = BorderStroke(1.dp, if (running) MaterialTheme.colorScheme.primary.copy(alpha = 0.32f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
     ) {
-        Row(modifier = Modifier.padding(18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
-                modifier = Modifier.size(52.dp).clip(CircleShape).background(
+                modifier = Modifier.size(48.dp).clip(CircleShape).background(
                     if (running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                 ),
                 contentAlignment = Alignment.Center,
@@ -1311,9 +1363,10 @@ private fun UpdateCard(
     onInstall: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
@@ -1353,14 +1406,15 @@ private fun UpdateCard(
 @Composable
 private fun LogsCard(text: UiStrings, lines: List<String>) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(22.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF19182C).copy(alpha = 0.84f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(text.debugLog, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color(0xFFF4F1FF))
+            Text(text.debugLog, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
             if (lines.isEmpty()) {
-                Text(text.noEventsYet, style = MaterialTheme.typography.bodySmall, color = Color(0xFFAAA6C0))
+                Text(text.noEventsYet, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 lines.forEach { line ->
                     Text(
@@ -1368,9 +1422,10 @@ private fun LogsCard(text: UiStrings, lines: List<String>) {
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         color = when {
-                            " E " in line || "ERROR" in line -> Color(0xFFFF8A9A)
-                            " W " in line || "WARN" in line -> Color(0xFFFFD27D)
-                            else -> Color(0xFF82E59C)
+                            " E " in line || "ERROR" in line -> MaterialTheme.colorScheme.error
+                            " W " in line || "WARN" in line -> SignalAmber
+                            "WS" in line -> MaterialTheme.colorScheme.primary
+                            else -> SignalMint
                         },
                     )
                 }
@@ -1392,95 +1447,159 @@ private fun ProxyHeroCard(
     onCopyLink: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(26.dp),
-        shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.20f)),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(142.dp)
-                    .clip(CircleShape)
-                    .clickable(enabled = !status.isStarting) {
-                        if (status.isRunning) onStop() else onStart()
-                    }
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color(0xFF32B7EF), Color(0xFF0788C7)),
-                        ),
-                    ),
-                contentAlignment = Alignment.Center,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_telegram_logo),
-                    contentDescription = null,
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(88.dp),
+                Text(
+                    if (text.start == "Запустить") "Статус MTProto" else "MTProto Status",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-            Text(
-                when {
-                    status.isRunning -> text.active
-                    status.isStarting -> text.working
-                    else -> text.stopped
-                },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = if (status.isRunning || status.isStarting) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = status.isRunning,
-                onClick = onOpenTelegram,
-            ) {
-                ButtonText(text.openInTelegram)
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                HeroBadge("CF", if (cfEnabled) "ON" else "OFF", Modifier.weight(1f))
-                HeroBadge("WS", stats.ws, Modifier.weight(1f))
-                HeroBadge("PORT", ProxyConfig.PORT.toString(), Modifier.weight(1f))
-            }
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
                 ) {
                     Text(
-                        link,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        style = MaterialTheme.typography.bodySmall,
+                        "AES-CTR + FakeTLS",
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    IconButton(onClick = onCopyLink) {
-                        Icon(Icons.Rounded.ContentCopy, contentDescription = text.copyTelegramLink)
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    status.isRunning -> SignalMint
+                                    status.isStarting -> SignalAmber
+                                    else -> MaterialTheme.colorScheme.outline
+                                },
+                            ),
+                    )
+                    Text(
+                        when {
+                            status.isRunning -> if (text.start == "Запустить") "Подключено" else "Connected"
+                            status.isStarting -> if (text.start == "Запустить") "Запуск..." else "Starting..."
+                            else -> if (text.start == "Запустить") "Отключено" else "Stopped"
+                        },
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                if (status.isRunning) {
+                    Text(
+                        status.uptime,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text(
+                        if (text.start == "Запустить") "ВХОДЯЩИЙ" else "INCOMING",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        stats.down,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = SignalMint,
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        if (text.start == "Запустить") "ИСХОДЯЩИЙ" else "OUTGOING",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        stats.up,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (status.isRunning) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onOpenTelegram,
+                    ) {
+                        ButtonText(text.openInTelegram)
+                    }
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = onCopyLink,
+                    ) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.size(6.dp))
+                        ButtonText(text.copyTelegramLink)
+                    }
+                    Button(
+                        modifier = Modifier.weight(0.8f),
+                        onClick = if (status.isRunning) onStop else onStart,
+                        enabled = !status.isStarting,
+                        colors = if (status.isRunning) {
+                            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        } else {
+                            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        },
+                    ) {
+                        ButtonText(if (status.isRunning) text.stop else text.start)
                     }
                 }
             }
-            Text(
-                if (status.isRunning) text.stop else text.start,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
 
 @Composable
 private fun HeroBadge(label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(modifier = modifier, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Row(
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.Center,
@@ -1495,37 +1614,29 @@ private fun HeroBadge(label: String, value: String, modifier: Modifier = Modifie
 
 @Composable
 private fun Header(status: ProxyStatus, text: UiStrings) {
-    val pulse = rememberInfiniteTransition(label = "status-pulse")
-    val statusAlpha by pulse.animateFloat(
-        initialValue = 0.45f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(animation = tween(1200), repeatMode = RepeatMode.Reverse),
-        label = "status-alpha",
-    )
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(30.dp),
-        shape = RoundedCornerShape(30.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
-        Column(modifier = Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("TG WS", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
-                    Text("Proxy", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("TgwsProxy", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(
                         if (status.isRunning) text.active else text.stopped,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (status.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (status.isRunning) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Box(
-                    modifier = Modifier.size(16.dp).graphicsLayer(alpha = if (status.isRunning) statusAlpha else 1f).clip(CircleShape).background(
-                        if (status.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                    modifier = Modifier.size(12.dp).clip(CircleShape).background(
+                        if (status.isRunning) SignalMint else MaterialTheme.colorScheme.outline,
                     ),
                 )
             }
@@ -1551,9 +1662,10 @@ private fun Metric(label: String, value: String, color: Color = MaterialTheme.co
 private fun ConnectionCard(text: UiStrings, secret: String, link: String, status: ProxyStatus) {
     var secretVisible by rememberSaveable { mutableStateOf(false) }
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.localEndpoint, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1599,9 +1711,10 @@ private fun SettingsCard(
     onCopySecret: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().liquidGlass(),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(text.proxyOptions, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
