@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.edit
 import com.tgwsproxy.android.proxy.ProxyLogger
+import com.tgwsproxy.android.traffic.TrafficStatsManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,26 @@ class ProxyService : Service() {
     @Volatile private var lastWsAttemptFailures: Long = 0
     @Volatile private var lastDownBytes: Long = 0
     @Volatile private var degradedStatsCycles: Int = 0
+    @Volatile private var allowLan: Boolean = false
+    @Volatile private var smartStandby: Boolean = true
+    @Volatile private var isScreenOff: Boolean = false
+    @Volatile private var lastTrafficActiveAtMs: Long = System.currentTimeMillis()
+
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    isScreenOff = true
+                    ProxyLogger.d("SmartStandby: screen turned OFF")
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    isScreenOff = false
+                    lastTrafficActiveAtMs = System.currentTimeMillis()
+                    ProxyLogger.d("SmartStandby: screen turned ON, active mode resumed")
+                }
+            }
+        }
+    }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -76,6 +97,11 @@ class ProxyService : Service() {
         super.onCreate()
         createNotificationChannel()
         registerNetworkCallback()
+        val filter = android.content.IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        runCatching { registerReceiver(screenReceiver, filter) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -88,6 +114,10 @@ class ProxyService : Service() {
         val providedSecret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf(ProxyConfig::isValidSecret)
         val cfEnabled = intent?.getBooleanExtra(EXTRA_CF_ENABLED, prefs.getBoolean(EXTRA_CF_ENABLED, true))
             ?: prefs.getBoolean(EXTRA_CF_ENABLED, true)
+        allowLan = intent?.getBooleanExtra(EXTRA_ALLOW_LAN, prefs.getBoolean(EXTRA_ALLOW_LAN, false))
+            ?: prefs.getBoolean(EXTRA_ALLOW_LAN, false)
+        smartStandby = intent?.getBooleanExtra(EXTRA_SMART_STANDBY, prefs.getBoolean(EXTRA_SMART_STANDBY, true))
+            ?: prefs.getBoolean(EXTRA_SMART_STANDBY, true)
         val poolSize = (intent?.getIntExtra(EXTRA_POOL_SIZE, -1) ?: -1)
             .takeIf { it in SUPPORTED_POOL_SIZES }
             ?: prefs.getString(EXTRA_POOL_SIZE, DEFAULT_POOL_SIZE.toString())
@@ -113,6 +143,8 @@ class ProxyService : Service() {
             putString(EXTRA_CF_WORKER_DOMAIN, cfDomain)
             putString(EXTRA_CF_DOMAIN, cfDomain)
             putBoolean(EXTRA_CF_ENABLED, cfEnabled)
+            putBoolean(EXTRA_ALLOW_LAN, allowLan)
+            putBoolean(EXTRA_SMART_STANDBY, smartStandby)
             putString(EXTRA_POOL_SIZE, poolSize.toString())
             putString(EXTRA_DC_IPS, dcIps)
         }
@@ -138,6 +170,7 @@ class ProxyService : Service() {
         statsJob?.cancel()
         watchdogJob?.cancel()
         networkRestartJob?.cancel()
+        runCatching { unregisterReceiver(screenReceiver) }
         unregisterNetworkCallback()
         stopNativeProxy()
         releaseWakeLock()
@@ -145,6 +178,7 @@ class ProxyService : Service() {
         ProxyServiceStatus.isStarting = false
         ProxyServiceStatus.startTime = 0
         ProxyServiceStatus.lastPing = -1
+        ProxyTileService.requestTileUpdate(this)
         lastSecret = ""
         AppDiagnostics.setProcessState(this, "proxy=stopped")
         serviceScope.cancel()
@@ -229,10 +263,12 @@ class ProxyService : Service() {
                     nativeRunning.set(false)
                     ProxyServiceStatus.isRunning = false
                     ProxyServiceStatus.isStarting = false
+                    ProxyTileService.requestTileUpdate(this@ProxyService)
                     stopSelf()
                 } else {
                     ProxyServiceStatus.isRunning = true
                     ProxyServiceStatus.isStarting = false
+                    ProxyTileService.requestTileUpdate(this@ProxyService)
                     ProxyLogger.i("Rust core started on ${ProxyConfig.HOST}:${ProxyConfig.PORT}")
                     AppDiagnostics.setProcessState(this, "proxy=running")
                 }
@@ -241,6 +277,7 @@ class ProxyService : Service() {
                 nativeRunning.set(false)
                 ProxyServiceStatus.isRunning = false
                 ProxyServiceStatus.isStarting = false
+                ProxyTileService.requestTileUpdate(this@ProxyService)
                 stopSelf()
             }
         }, "tgws-native-start").apply {
@@ -256,8 +293,9 @@ class ProxyService : Service() {
         NativeProxy.setPoolSize(poolSize)
         NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
         NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = true, userDomain = cfDomain)
+        val bindHost = if (allowLan) "0.0.0.0" else ProxyConfig.HOST
         return NativeProxy.startProxy(
-            host = ProxyConfig.HOST,
+            host = bindHost,
             port = ProxyConfig.PORT,
             dcIps = ProxyConfig.dcMappingsForNative(dcIps),
             secret = secret,
@@ -345,7 +383,9 @@ class ProxyService : Service() {
         statsJob?.cancel()
         statsJob = serviceScope.launch {
             while (isActive) {
-                delay(3000)
+                val isStandby = smartStandby && isScreenOff && (System.currentTimeMillis() - lastTrafficActiveAtMs > 10 * 60 * 1000L)
+                val pollInterval = if (isStandby) 20_000L else 3_000L
+                delay(pollInterval)
                 if (!nativeRunning.get()) continue
                 renewWakeLockIfNeeded()
                 val online = isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 700)
@@ -358,6 +398,9 @@ class ProxyService : Service() {
                 if (stats.isNotBlank()) {
                     ProxyLogger.d("Rust stats: $stats")
                     inspectTransportHealth(stats)
+                    val downB = statLong(stats, "down_b")
+                    val upB = statLong(stats, "up_b")
+                    TrafficStatsManager.recordTraffic(this@ProxyService, downB, upB)
                 }
                 updateNotification(if (online) compactStats(stats) else "service N/A")
                 if (consecutivePortFailures >= PORT_FAILURES_BEFORE_RESTART) {
@@ -556,6 +599,8 @@ class ProxyService : Service() {
         const val EXTRA_CF_ENABLED = "cf_enabled"
         const val EXTRA_POOL_SIZE = "pool_size"
         const val EXTRA_DC_IPS = "dc_ips"
+        const val EXTRA_ALLOW_LAN = "allow_lan"
+        const val EXTRA_SMART_STANDBY = "smart_standby"
         private const val PREFS = "proxy"
         private const val CHANNEL_ID = "proxy"
         private const val NOTIFICATION_ID = 1001

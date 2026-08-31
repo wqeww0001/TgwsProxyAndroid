@@ -101,8 +101,16 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.compose.foundation.Canvas
+import com.tgwsproxy.android.benchmark.DomainBenchmark
+import com.tgwsproxy.android.benchmark.DomainPingResult
+import com.tgwsproxy.android.config.ProxyProfile
 import com.tgwsproxy.android.proxy.ProxyLogger
+import com.tgwsproxy.android.traffic.TrafficStatsManager
+import com.tgwsproxy.android.traffic.TrafficSummary
 import com.tgwsproxy.android.ui.theme.*
+import com.tgwsproxy.android.util.NetworkUtils
+import com.tgwsproxy.android.util.QrGenerator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -421,6 +429,12 @@ private fun ProxyScreen(
         )
     }
     var autoStartProxy by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_START_PROXY_PREF, false)) }
+    var allowLan by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_ALLOW_LAN, false)) }
+    var smartStandby by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_SMART_STANDBY, true)) }
+    var showQrDialog by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var trafficSummary by remember { mutableStateOf(TrafficStatsManager.getSummary(context)) }
     var telegramClients by remember { mutableStateOf(emptyList<TelegramClient>()) }
     var showTelegramClientDialog by remember { mutableStateOf(false) }
     var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
@@ -484,6 +498,7 @@ private fun ProxyScreen(
             }
             logLines = withContext(Dispatchers.IO) { ProxyLogger.snapshot().takeLast(120) }
             batteryUnrestricted = context.isIgnoringBatteryOptimizations()
+            trafficSummary = TrafficStatsManager.getSummary(context)
             delay(1000)
         }
     }
@@ -536,6 +551,56 @@ private fun ProxyScreen(
                 TextButton(onClick = { showDisableAutoUpdateWarning = false }) {
                     Text(text.keepEnabled)
                 }
+            },
+        )
+    }
+
+    if (showQrDialog) {
+        val localIp = NetworkUtils.getLocalIpAddress(context)
+        val lanLink = if (localIp != null) {
+            val cleanDomain = fakeTlsDomain.trim()
+            val proxySecret = if (cleanDomain.isBlank()) "dd$secret" else "ee$secret${cleanDomain.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }}"
+            "tg://proxy?server=$localIp&port=${ProxyConfig.PORT}&secret=$proxySecret"
+        } else link
+        QrDialog(link = lanLink, onDismiss = { showQrDialog = false })
+    }
+
+    if (showExportDialog) {
+        val profile = ProxyProfile(
+            id = "custom",
+            ruName = "Пользовательский",
+            enName = "Custom",
+            ruDesc = "",
+            enDesc = "",
+            fakeTlsDomain = fakeTlsDomain,
+            cfWorkerDomain = cfWorkerDomain,
+            cfEnabled = cfEnabled,
+            poolSize = poolSize,
+            smartStandby = smartStandby,
+            dcMappings = dcMappings,
+        )
+        ExportConfigDialog(language = language, jsonText = profile.exportToJson(secret), onDismiss = { showExportDialog = false })
+    }
+
+    if (showImportDialog) {
+        ImportConfigDialog(
+            language = language,
+            onDismiss = { showImportDialog = false },
+            onImport = { cfg ->
+                if (cfg.secret != null) secret = cfg.secret
+                fakeTlsDomain = cfg.fakeTlsDomain
+                cfWorkerDomain = cfg.cfWorkerDomain
+                cfEnabled = cfg.cfEnabled
+                poolSize = cfg.poolSize
+                smartStandby = cfg.smartStandby
+                if (cfg.dcMappings.isNotBlank()) dcMappings = cfg.dcMappings
+                context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+                context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+                context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+                context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
+                context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
+                if (cfg.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
+                Toast.makeText(context, if (language == AppLanguage.Ru) "Настройки импортированы" else "Settings imported", Toast.LENGTH_SHORT).show()
             },
         )
     }
@@ -664,11 +729,21 @@ private fun ProxyScreen(
                         link = link,
                         logs = logLines,
                         cfEnabled = cfEnabled,
+                        language = language,
+                        trafficSummary = trafficSummary,
+                        allowLan = allowLan,
+                        secret = secret,
+                        fakeTlsDomain = fakeTlsDomain,
+                        onResetTraffic = {
+                            TrafficStatsManager.resetStats(context)
+                            trafficSummary = TrafficStatsManager.getSummary(context)
+                        },
+                        onShowQr = { showQrDialog = true },
                         onStart = {
                             if (!ProxyConfig.isValidDcMappings(dcMappings)) {
                                 Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
                             } else {
-                                context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings)
+                                context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings, allowLan, smartStandby)
                             }
                             proxyStatus = ProxyStatus(isStarting = true)
                         },
@@ -735,6 +810,33 @@ private fun ProxyScreen(
                             cfEnabled = it
                             context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, it)
                         },
+                        allowLan = allowLan,
+                        onAllowLanChange = {
+                            allowLan = it
+                            context.saveProxyPref(ProxyService.EXTRA_ALLOW_LAN, it)
+                        },
+                        smartStandby = smartStandby,
+                        onSmartStandbyChange = {
+                            smartStandby = it
+                            context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, it)
+                        },
+                        onApplyProfile = { profile ->
+                            fakeTlsDomain = profile.fakeTlsDomain
+                            cfWorkerDomain = profile.cfWorkerDomain
+                            cfEnabled = profile.cfEnabled
+                            poolSize = profile.poolSize
+                            smartStandby = profile.smartStandby
+                            if (profile.dcMappings.isNotBlank()) dcMappings = profile.dcMappings
+                            context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
+                            context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+                            context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+                            context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
+                            context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
+                            if (profile.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
+                            Toast.makeText(context, if (language == AppLanguage.Ru) "Применен профиль: ${profile.name(true)}" else "Applied profile: ${profile.name(false)}", Toast.LENGTH_SHORT).show()
+                        },
+                        onOpenExport = { showExportDialog = true },
+                        onOpenImport = { showImportDialog = true },
                         secret = secret,
                         onCopySecret = {
                             context.copyToClipboard(secret)
@@ -811,6 +913,13 @@ private fun HomePage(
     link: String,
     logs: List<String>,
     cfEnabled: Boolean,
+    language: AppLanguage,
+    trafficSummary: TrafficSummary,
+    allowLan: Boolean,
+    secret: String,
+    fakeTlsDomain: String,
+    onResetTraffic: () -> Unit,
+    onShowQr: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onCopyLink: () -> Unit,
@@ -828,6 +937,15 @@ private fun HomePage(
         onStop = onStop,
         onOpenTelegram = onOpenTelegram,
         onCopyLink = onCopyLink,
+    )
+    TrafficStatsCard(language, trafficSummary, onResetTraffic)
+    LanSharingCard(
+        language = language,
+        allowLan = allowLan,
+        isRunning = status.isRunning,
+        secret = secret,
+        fakeTlsDomain = fakeTlsDomain,
+        onShowQr = onShowQr,
     )
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile(if (text.start == "Запустить") "Пул WebSocket" else "WS Pool", "${stats.ws} active", Modifier.weight(1f))
@@ -883,6 +1001,13 @@ private fun SettingsPage(
     enabled: Boolean,
     cfEnabled: Boolean,
     onCfEnabledChange: (Boolean) -> Unit,
+    allowLan: Boolean,
+    onAllowLanChange: (Boolean) -> Unit,
+    smartStandby: Boolean,
+    onSmartStandbyChange: (Boolean) -> Unit,
+    onApplyProfile: (ProxyProfile) -> Unit,
+    onOpenExport: () -> Unit,
+    onOpenImport: () -> Unit,
     secret: String,
     onCopySecret: () -> Unit,
     poolSize: Int,
@@ -909,6 +1034,13 @@ private fun SettingsPage(
     PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(LocalContext.current))
     LanguageCard(text, language, onLanguageChange)
     ThemePickerCard(language, themeMode, onThemeModeChange)
+    PresetsAndBackupCard(
+        language = language,
+        enabled = enabled,
+        onApplyProfile = onApplyProfile,
+        onOpenExport = onOpenExport,
+        onOpenImport = onOpenImport,
+    )
     SettingsCard(
         text = text,
         fakeTlsDomain = fakeTlsDomain,
@@ -922,6 +1054,21 @@ private fun SettingsPage(
         onCfEnabledChange = onCfEnabledChange,
         secret = secret,
         onCopySecret = onCopySecret,
+    )
+    DomainBenchmarkCard(
+        language = language,
+        currentDomain = fakeTlsDomain,
+        onSelectDomain = onFakeTlsDomainChange,
+    )
+    LanSettingsCard(
+        language = language,
+        allowLan = allowLan,
+        onAllowLanChange = onAllowLanChange,
+    )
+    SmartStandbyCard(
+        language = language,
+        smartStandby = smartStandby,
+        onSmartStandbyChange = onSmartStandbyChange,
     )
     PoolSizeCard(text, poolSize, enabled, onPoolSizeChange)
     AutoUpdateCard(
@@ -943,6 +1090,567 @@ private fun SettingsPage(
         update = availableUpdate,
         onCheck = onCheckUpdate,
         onInstall = onInstallUpdate,
+    )
+}
+
+@Composable
+private fun DomainBenchmarkCard(
+    language: AppLanguage,
+    currentDomain: String,
+    onSelectDomain: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var isTesting by remember { mutableStateOf(false) }
+    var results by remember { mutableStateOf<List<DomainPingResult>>(emptyList()) }
+    val isRu = language == AppLanguage.Ru
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        if (isRu) "Тест задержки доменов" else "Domain Latency Test",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        if (isRu) "Поиск лучшего маршрута FakeTLS / Cloudflare" else "Find best FakeTLS / Cloudflare route",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Button(
+                    onClick = {
+                        if (!isTesting) {
+                            isTesting = true
+                            coroutineScope.launch {
+                                results = DomainBenchmark.runBenchmark(currentDomain, isRu)
+                                isTesting = false
+                            }
+                        }
+                    },
+                    enabled = !isTesting,
+                ) {
+                    ButtonText(if (isTesting) (if (isRu) "Тест..." else "Testing...") else (if (isRu) "Проверить" else "Check ping"))
+                }
+            }
+
+            if (results.isNotEmpty()) {
+                val fastest = results.firstOrNull { it.isSuccess }
+                if (fastest != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (isRu) "Лучший: ${fastest.domain} (${fastest.pingMs} ms)" else "Fastest: ${fastest.domain} (${fastest.pingMs} ms)",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                onSelectDomain(fastest.domain)
+                                Toast.makeText(context, if (isRu) "Применен домен: ${fastest.domain}" else "Applied domain: ${fastest.domain}", Toast.LENGTH_SHORT).show()
+                            },
+                        ) {
+                            ButtonText(if (isRu) "Применить" else "Apply")
+                        }
+                    }
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    results.forEach { result ->
+                        val isCurrent = result.domain.equals(currentDomain, ignoreCase = true)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isCurrent) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(
+                                1.dp,
+                                if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    Text(
+                                        result.domain,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    if (result.description.isNotBlank()) {
+                                        Text(
+                                            result.description,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        if (result.isSuccess) "${result.pingMs} ms" else (if (isRu) "Таймаут" else "Timeout"),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        color = when {
+                                            !result.isSuccess -> MaterialTheme.colorScheme.error
+                                            result.pingMs < 100 -> SignalMint
+                                            result.pingMs < 250 -> SignalAmber
+                                            else -> MaterialTheme.colorScheme.error
+                                        },
+                                    )
+                                    if (!isCurrent) {
+                                        TextButton(
+                                            onClick = {
+                                                onSelectDomain(result.domain)
+                                                Toast.makeText(context, if (isRu) "Выбран: ${result.domain}" else "Selected: ${result.domain}", Toast.LENGTH_SHORT).show()
+                                            },
+                                        ) {
+                                            Text(if (isRu) "Выбрать" else "Select")
+                                        }
+                                    } else {
+                                        Text(
+                                            if (isRu) "Активен ✓" else "Active ✓",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrafficStatsCard(
+    language: AppLanguage,
+    summary: TrafficSummary,
+    onReset: () -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (isRu) "Статистика трафика" else "Traffic Statistics",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                TextButton(onClick = onReset) {
+                    Text(if (isRu) "Сбросить" else "Reset", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(if (isRu) "Сегодня" else "Today", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("↓ ${summary.formattedTodayDown()}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = SignalMint)
+                        Text("↑ ${summary.formattedTodayUp()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(if (isRu) "За всё время" else "All Time", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("↓ ${summary.formattedTotalDown()}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = SignalBlue)
+                        Text("↑ ${summary.formattedTotalUp()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LanSharingCard(
+    language: AppLanguage,
+    allowLan: Boolean,
+    isRunning: Boolean,
+    secret: String,
+    fakeTlsDomain: String,
+    onShowQr: () -> Unit,
+) {
+    val context = LocalContext.current
+    val isRu = language == AppLanguage.Ru
+    val localIp = remember(allowLan, isRunning) { NetworkUtils.getLocalIpAddress(context) }
+    val lanLink = remember(localIp, secret, fakeTlsDomain) {
+        if (localIp != null) {
+            val cleanDomain = fakeTlsDomain.trim()
+            val proxySecret = if (cleanDomain.isBlank()) "dd$secret" else "ee$secret${cleanDomain.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }}"
+            "tg://proxy?server=$localIp&port=${ProxyConfig.PORT}&secret=$proxySecret"
+        } else ""
+    }
+
+    if (!allowLan) return
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (isRu) "Раздача в сети Wi-Fi" else "Local Wi-Fi Sharing",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        if (localIp != null) "IP: $localIp:${ProxyConfig.PORT}" else (if (isRu) "Wi-Fi не подключен" else "Wi-Fi not connected"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (localIp != null) SignalMint else MaterialTheme.colorScheme.error,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+
+            if (localIp != null && isRunning) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = onShowQr,
+                    ) {
+                        ButtonText(if (isRu) "Показать QR" else "Show QR")
+                    }
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            context.copyToClipboard(lanLink)
+                            Toast.makeText(context, if (isRu) "Ссылка для ПК скопирована" else "PC link copied", Toast.LENGTH_SHORT).show()
+                        },
+                    ) {
+                        ButtonText(if (isRu) "Копировать для ПК" else "Copy PC link")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PresetsAndBackupCard(
+    language: AppLanguage,
+    enabled: Boolean,
+    onApplyProfile: (ProxyProfile) -> Unit,
+    onOpenExport: () -> Unit,
+    onOpenImport: () -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                if (isRu) "Готовые профили (Пресеты)" else "Quick Profiles & Presets",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ProxyProfile.PRESETS.forEach { profile ->
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { onApplyProfile(profile) },
+                        enabled = enabled,
+                    ) {
+                        Text(
+                            when (profile.id) {
+                                "fast_cf" -> if (isRu) "🚀 Скорость" else "🚀 Speed"
+                                "stealth_faketls" -> if (isRu) "🛡️ Скрытный" else "🛡️ Stealth"
+                                else -> if (isRu) "🔋 Эко" else "🔋 Eco"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenExport,
+                ) {
+                    ButtonText(if (isRu) "Экспорт конфига" else "Export Config")
+                }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenImport,
+                    enabled = enabled,
+                ) {
+                    ButtonText(if (isRu) "Импорт конфига" else "Import Config")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmartStandbyCard(
+    language: AppLanguage,
+    smartStandby: Boolean,
+    onSmartStandbyChange: (Boolean) -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    if (isRu) "Умный режим сна (Smart Standby)" else "Smart Standby Mode",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (isRu) "Снижает активность при выключенном экране без трафика" else "Reduces background polling when screen is OFF and idle",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = smartStandby, onCheckedChange = onSmartStandbyChange)
+        }
+    }
+}
+
+@Composable
+private fun LanSettingsCard(
+    language: AppLanguage,
+    allowLan: Boolean,
+    onAllowLanChange: (Boolean) -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    if (isRu) "Раздача по Wi-Fi (LAN Mode)" else "LAN Sharing (0.0.0.0)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (isRu) "Разрешить подключение ПК и других устройств в локальной сети" else "Allow PC and other local network devices to connect",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = allowLan, onCheckedChange = onAllowLanChange)
+        }
+    }
+}
+
+@Composable
+private fun QrDialog(
+    link: String,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val qrMatrix = remember(link) { runCatching { QrGenerator.encode(link) }.getOrNull() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("QR-код для подключения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Отсканируйте камерой Telegram на компьютере или планшете",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (qrMatrix != null) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.White,
+                        modifier = Modifier.size(220.dp).padding(8.dp),
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val moduleSize = size.width / qrMatrix.size
+                            for (r in 0 until qrMatrix.size) {
+                                for (c in 0 until qrMatrix.size) {
+                                    if (qrMatrix.isDark(r, c)) {
+                                        drawRect(
+                                            color = Color.Black,
+                                            topLeft = Offset(c * moduleSize, r * moduleSize),
+                                            size = androidx.compose.ui.geometry.Size(moduleSize, moduleSize),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                context.copyToClipboard(link)
+                Toast.makeText(context, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
+                onDismiss()
+            }) {
+                Text("Скопировать ссылку")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Закрыть")
+            }
+        },
+    )
+}
+
+@Composable
+private fun ExportConfigDialog(
+    language: AppLanguage,
+    jsonText: String,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val isRu = language == AppLanguage.Ru
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isRu) "Экспорт конфигурации" else "Export Configuration", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(if (isRu) "Скопируйте настройки для переноса на другое устройство:" else "Copy your settings to transfer to another device:")
+                OutlinedTextField(
+                    value = jsonText,
+                    onValueChange = {},
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                context.copyToClipboard(jsonText)
+                Toast.makeText(context, if (isRu) "Конфиг скопирован" else "Config copied", Toast.LENGTH_SHORT).show()
+                onDismiss()
+            }) {
+                Text(if (isRu) "Скопировать" else "Copy")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(if (isRu) "Закрыть" else "Close") }
+        },
+    )
+}
+
+@Composable
+private fun ImportConfigDialog(
+    language: AppLanguage,
+    onDismiss: () -> Unit,
+    onImport: (ProxyProfile.Companion.ImportedConfig) -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+    var rawText by remember { mutableStateOf("") }
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isRu) "Импорт конфигурации" else "Import Configuration", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(if (isRu) "Вставьте JSON конфиг или ссылку tg://proxy:" else "Paste JSON config or tg://proxy link:")
+                OutlinedTextField(
+                    value = rawText,
+                    onValueChange = { rawText = it; errorText = null },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("{ ... }") },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+                if (errorText != null) {
+                    Text(errorText!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val parsed = ProxyProfile.parseImport(rawText)
+                if (parsed != null) {
+                    onImport(parsed)
+                    onDismiss()
+                } else {
+                    errorText = if (isRu) "Неверный формат конфигурации" else "Invalid configuration format"
+                }
+            }) {
+                Text(if (isRu) "Применить" else "Apply")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(if (isRu) "Отмена" else "Cancel") }
+        },
     )
 }
 
@@ -1804,12 +2512,16 @@ private fun Context.startProxyService(
     cfEnabled: Boolean,
     poolSize: Int,
     dcMappings: String,
+    allowLan: Boolean = false,
+    smartStandby: Boolean = true,
 ) {
     val cleanFakeTlsDomain = ProxyConfig.normalizeDomain(fakeTlsDomain)
     val cleanWorkerDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+    saveProxyPref(ProxyService.EXTRA_ALLOW_LAN, allowLan)
+    saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
     saveProxyPref(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
@@ -1818,6 +2530,8 @@ private fun Context.startProxyService(
         .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+        .putExtra(ProxyService.EXTRA_ALLOW_LAN, allowLan)
+        .putExtra(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
         .putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
         .putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
