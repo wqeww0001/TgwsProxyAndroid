@@ -48,6 +48,24 @@
 
 ---
 
+## 🛠️ Схема работы
+
+```mermaid
+graph LR
+    subgraph Android Device
+        TG[Telegram App] -->|MTProto 127.0.0.1:1443| CORE[Rust Tokio Core]
+        TILE[Quick Settings Tile] -.->|Управление| SERVICE[Foreground Service]
+        SERVICE --> CORE
+    end
+    
+    subgraph Network
+        CORE -->|WebSocket WSS / FakeTLS 443| CF[Cloudflare CDN / SNI Host]
+        CF -->|MTProto Encrypted| DC[Telegram Datacenters 1..5]
+    end
+```
+
+---
+
 ## 🚀 Быстрый старт
 
 1. Скачайте актуальный APK-файл со страницы **[Релизов (Releases)](https://github.com/wqeww0001/TgwsProxyAndroid/releases/latest)**.
