@@ -106,6 +106,14 @@ import com.tgwsproxy.android.benchmark.DomainBenchmark
 import com.tgwsproxy.android.benchmark.DomainPingResult
 import com.tgwsproxy.android.AppChannel
 import com.tgwsproxy.android.ReleaseArchiveItem
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.app.Activity
+import android.net.VpnService
+import com.tgwsproxy.android.vpn.ServiceOperationMode
+import com.tgwsproxy.android.vpn.TelegramPackageDetector
+import com.tgwsproxy.android.vpn.TgwsVpnService
+import com.tgwsproxy.android.vpn.VpnStatus
 import com.tgwsproxy.android.config.ProxyProfile
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
@@ -442,6 +450,44 @@ private fun ProxyScreen(
     }
     var showBetaWarningDialog by remember { mutableStateOf(false) }
     var showArchiveDialog by remember { mutableStateOf(false) }
+    var serviceMode by rememberSaveable {
+        mutableStateOf(
+            ServiceOperationMode.entries.firstOrNull {
+                it.key == context.getProxyPref("service_mode", ServiceOperationMode.ProxyOnly.key)
+            } ?: ServiceOperationMode.ProxyOnly
+        )
+    }
+    var isVpnActive by remember { mutableStateOf(VpnStatus.isVpnRunning) }
+    val detectedApps = remember { TelegramPackageDetector.getInstalledTelegramApps(context) }
+
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            TgwsVpnService.start(context)
+            isVpnActive = true
+            Toast.makeText(context, if (language == AppLanguage.Ru) "VPN-туннель для звонков запущен" else "VPN Tunnel for Calls started", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, if (language == AppLanguage.Ru) "Разрешение VPN отклонено" else "VPN permission rejected", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun toggleVpnTunnel() {
+        if (isVpnActive) {
+            TgwsVpnService.stop(context)
+            isVpnActive = false
+            Toast.makeText(context, if (language == AppLanguage.Ru) "VPN-туннель остановлен" else "VPN Tunnel stopped", Toast.LENGTH_SHORT).show()
+        } else {
+            val vpnIntent = VpnService.prepare(context)
+            if (vpnIntent != null) {
+                vpnPermissionLauncher.launch(vpnIntent)
+            } else {
+                TgwsVpnService.start(context)
+                isVpnActive = true
+                Toast.makeText(context, if (language == AppLanguage.Ru) "VPN-туннель для звонков запущен" else "VPN Tunnel for Calls started", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     var archiveReleases by remember { mutableStateOf<List<ReleaseArchiveItem>>(emptyList()) }
     var isArchiveLoading by remember { mutableStateOf(false) }
     var rollbackConfirmRelease by remember { mutableStateOf<ReleaseArchiveItem?>(null) }
@@ -542,6 +588,7 @@ private fun ProxyScreen(
     LaunchedEffect(Unit) {
         while (isActive) {
             val running = ProxyServiceStatus.isRunning
+            isVpnActive = VpnStatus.isVpnRunning
             proxyStatus = if (running) {
                 ProxyStatus(true, ProxyServiceStatus.getUptime(), ProxyServiceStatus.lastPing)
             } else {
@@ -866,6 +913,14 @@ private fun ProxyScreen(
                         allowLan = allowLan,
                         secret = secret,
                         fakeTlsDomain = fakeTlsDomain,
+                        serviceMode = serviceMode,
+                        isVpnActive = isVpnActive,
+                        detectedAppsCount = detectedApps.size,
+                        onToggleMode = { newMode ->
+                            serviceMode = newMode
+                            context.saveProxyPref("service_mode", newMode.key)
+                        },
+                        onToggleVpn = { toggleVpnTunnel() },
                         onResetTraffic = {
                             TrafficStatsManager.resetStats(context)
                             trafficSummary = TrafficStatsManager.getSummary(context)
@@ -876,11 +931,18 @@ private fun ProxyScreen(
                                 Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
                             } else {
                                 context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings, allowLan, smartStandby)
+                                if (serviceMode == ServiceOperationMode.VpnTunnel && !isVpnActive) {
+                                    toggleVpnTunnel()
+                                }
                             }
                             proxyStatus = ProxyStatus(isStarting = true)
                         },
                         onStop = {
                             context.stopService(Intent(context, ProxyService::class.java))
+                            if (isVpnActive) {
+                                TgwsVpnService.stop(context)
+                                isVpnActive = false
+                            }
                             proxyStatus = ProxyStatus(false)
                         },
                         onCopyLink = {
@@ -1069,6 +1131,11 @@ private fun HomePage(
     allowLan: Boolean,
     secret: String,
     fakeTlsDomain: String,
+    serviceMode: ServiceOperationMode,
+    isVpnActive: Boolean,
+    detectedAppsCount: Int,
+    onToggleMode: (ServiceOperationMode) -> Unit,
+    onToggleVpn: () -> Unit,
     onResetTraffic: () -> Unit,
     onShowQr: () -> Unit,
     onStart: () -> Unit,
@@ -1077,7 +1144,15 @@ private fun HomePage(
     onOpenTelegram: () -> Unit,
 ) {
     val stats = remember(logs) { latestStats(logs) }
-    PageTitle(if (text.start == "Запустить") "Главная" else "Home", "127.0.0.1:1443 · MTProto WS Proxy")
+    PageTitle(if (text.start == "Запустить") "Главная" else "Home", if (serviceMode == ServiceOperationMode.VpnTunnel) "Туннель со звонками (VPN)" else "127.0.0.1:1443 · MTProto WS Proxy")
+    VpnModeCard(
+        language = language,
+        mode = serviceMode,
+        isVpnActive = isVpnActive,
+        appsCount = detectedAppsCount,
+        onModeChange = onToggleMode,
+        onToggleVpn = onToggleVpn,
+    )
     ProxyHeroCard(
         text = text,
         status = status,
@@ -1968,6 +2043,137 @@ private fun PageTitle(title: String, subtitle: String) {
     }
 }
 
+
+
+@Composable
+private fun VpnModeCard(
+    language: AppLanguage,
+    mode: ServiceOperationMode,
+    isVpnActive: Boolean,
+    appsCount: Int,
+    onModeChange: (ServiceOperationMode) -> Unit,
+    onToggleVpn: () -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, if (mode == ServiceOperationMode.VpnTunnel) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (isRu) "Режим работы сервиса" else "Service Operation Mode",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (mode == ServiceOperationMode.VpnTunnel) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isVpnActive) SignalMint.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(
+                            if (isVpnActive) (if (isRu) "🟢 VPN АКТИВЕН" else "🟢 VPN ACTIVE") else (if (isRu) "⚪ ВЫКЛЮЧЕН" else "⚪ OFF"),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isVpnActive) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ServiceOperationMode.entries.forEach { item ->
+                    val selected = mode == item
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { onModeChange(item) },
+                        border = BorderStroke(
+                            if (selected) 2.dp else 1.dp,
+                            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        ),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else Color.Transparent,
+                        ),
+                    ) {
+                        Text(
+                            when (item) {
+                                ServiceOperationMode.ProxyOnly -> if (isRu) "🚀 Только прокси" else "🚀 Proxy Only"
+                                ServiceOperationMode.VpnTunnel -> if (isRu) "🛡️ Прокси + Звонки" else "🛡️ Proxy + Calls"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+
+            if (mode == ServiceOperationMode.VpnTunnel) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                if (isRu) "Туннель для Telegram и звонков" else "Tunnel for Telegram & Calls",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                if (isRu) "Приложений: $appsCount" else "Apps: $appsCount",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            if (isRu) {
+                                "Маршрутизирует весь трафик Telegram (включая P2P и UDP-звонки). Банки, браузеры и другие приложения работают напрямую без VPN."
+                            } else {
+                                "Routes all Telegram traffic (including P2P and UDP calls). Banking, browser and other apps connect directly without VPN."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            Button(
+                                onClick = onToggleVpn,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isVpnActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                ),
+                            ) {
+                                Text(
+                                    if (isVpnActive) (if (isRu) "Остановить VPN" else "Stop VPN") else (if (isRu) "Запустить VPN" else "Start VPN"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun BuildMetadataCard(language: AppLanguage, channel: AppChannel) {
