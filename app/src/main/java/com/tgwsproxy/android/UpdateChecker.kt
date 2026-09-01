@@ -13,10 +13,26 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 
+enum class AppChannel(val key: String, val ruTitle: String, val enTitle: String, val ruDescription: String, val enDescription: String) {
+    Stable("stable", "Стабильная", "Stable", "Проверенные официальные релизы", "Tested official releases"),
+    Beta("beta", "Бета / Снапшоты", "Beta & Snapshots", "Ранний доступ к новым функциям (возможны баги)", "Early access to new features (may contain bugs)"),
+}
+
 data class UpdateInfo(
     val version: String,
     val apkUrl: String,
     val releaseNotes: String = "",
+    val isPrerelease: Boolean = false,
+)
+
+data class ReleaseArchiveItem(
+    val version: String,
+    val tagName: String,
+    val title: String,
+    val releaseNotes: String,
+    val publishedAt: String,
+    val isPrerelease: Boolean,
+    val apkUrl: String,
 )
 
 object UpdateChecker {
@@ -27,12 +43,22 @@ object UpdateChecker {
         return info.versionName ?: "0.0"
     }
 
-    fun checkLatest(repo: String, currentVersion: String): UpdateInfo? {
+    fun currentVersionCode(context: Context): Long {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+    }
+
+    fun checkLatest(repo: String, currentVersion: String, channel: AppChannel = AppChannel.Stable): UpdateInfo? {
         val cleanRepo = repo.trim().removePrefix("https://github.com/").trim('/')
         if (!cleanRepo.contains('/')) error("GitHub repo must look like owner/name")
 
         return runCatching {
-            checkLatestViaApi(cleanRepo, currentVersion)
+            checkLatestViaApi(cleanRepo, currentVersion, channel)
         }.getOrElse { apiError ->
             runCatching {
                 checkLatestViaReleaseRedirect(cleanRepo, currentVersion)
@@ -42,7 +68,102 @@ object UpdateChecker {
         }
     }
 
-    private fun checkLatestViaApi(repo: String, currentVersion: String): UpdateInfo? {
+    fun fetchAllReleases(repo: String = DEFAULT_GITHUB_REPO): List<ReleaseArchiveItem> {
+        val cleanRepo = repo.trim().removePrefix("https://github.com/").trim('/')
+        return runCatching {
+            val json = httpGet(
+                url = "https://api.github.com/repos/$cleanRepo/releases?per_page=30",
+                accept = "application/vnd.github+json",
+            )
+            val array = org.json.JSONArray(json)
+            val list = mutableListOf<ReleaseArchiveItem>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val tagName = obj.optString("tag_name").trim()
+                val version = tagName.removePrefix("v").trim()
+                val title = obj.optString("name", tagName)
+                val body = obj.optString("body", "").trim()
+                val publishedAt = obj.optString("published_at", "").take(10)
+                val isPrerelease = obj.optBoolean("prerelease", false)
+                var apkUrl = ""
+                val assets = obj.optJSONArray("assets")
+                if (assets != null) {
+                    for (j in 0 until assets.length()) {
+                        val asset = assets.getJSONObject(j)
+                        val name = asset.optString("name")
+                        val url = asset.optString("browser_download_url")
+                        if (name.endsWith(".apk", ignoreCase = true) && url.isNotBlank()) {
+                            apkUrl = url
+                            break
+                        }
+                    }
+                }
+                if (apkUrl.isBlank() && tagName.isNotBlank()) {
+                    apkUrl = "https://github.com/$cleanRepo/releases/download/$tagName/TgwsProxyAndroid-$tagName.apk"
+                }
+                if (version.isNotBlank()) {
+                    list.add(
+                        ReleaseArchiveItem(
+                            version = version,
+                            tagName = tagName,
+                            title = title,
+                            releaseNotes = body,
+                            publishedAt = publishedAt,
+                            isPrerelease = isPrerelease,
+                            apkUrl = apkUrl,
+                        )
+                    )
+                }
+            }
+            list
+        }.getOrElse {
+            // Fallback list of known historical releases
+            listOf(
+                ReleaseArchiveItem("2.4.2", "v2.4.2", "TgwsProxyAndroid v2.4.2", "Исправление багов шторки, пресетов и теста доменов. Система каналов и откат версий.", "2026-09-01", false, "https://github.com/$cleanRepo/releases/download/v2.4.2/app-release.apk"),
+                ReleaseArchiveItem("2.4.1", "v2.4.1", "TgwsProxyAndroid v2.4.1", "Плитка в шторке, LAN режим 0.0.0.0 с QR-кодом, Smart Standby, пресеты, история трафика.", "2026-08-31", false, "https://github.com/$cleanRepo/releases/download/v2.4.1/app-release.apk"),
+                ReleaseArchiveItem("2.4.0", "v2.4.0", "TgwsProxyAndroid v2.4.0", "Минималистичный редизайн, оптимизация энергопотребления и батареи.", "2026-08-28", false, "https://github.com/$cleanRepo/releases/download/v2.4.0/app-release.apk"),
+                ReleaseArchiveItem("2.3.3", "v2.3.3", "TgwsProxyAndroid 2.3.3", "Исправление Cloudflare Priority и оптимизация пула соединений.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.3/app-release.apk"),
+                ReleaseArchiveItem("2.3.2", "v2.3.2", "TgwsProxyAndroid 2.3.2", "Hotfix: свайп UI и восстановление соединения.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.2/app-release.apk"),
+                ReleaseArchiveItem("2.3.1", "v2.3.1", "TgwsProxyAndroid 2.3.1", "Детекция клиентов Telegram на Android 11+.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.1/app-release.apk"),
+                ReleaseArchiveItem("2.3.0", "v2.3.0", "TgwsProxyAndroid 2.3.0", "Обновление интерфейса и стабильности прокси.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.0/app-release.apk"),
+                ReleaseArchiveItem("2.2.0", "v2.2.0", "TgwsProxyAndroid v2.2.0", "Маршрутизация и легковесный интерфейс.", "2026-08-09", false, "https://github.com/$cleanRepo/releases/download/v2.2.0/app-release.apk"),
+                ReleaseArchiveItem("2.1.2", "v2.1.2", "TgwsProxyAndroid v2.1.2", "Защита сервиса от сбоев в OEM оболочках.", "2026-08-05", false, "https://github.com/$cleanRepo/releases/download/v2.1.2/app-release.apk"),
+                ReleaseArchiveItem("2.1.1", "v2.1.1", "TgwsProxyAndroid v2.1.1", "Фикс инициализации JNA в релизной сборке.", "2026-08-01", false, "https://github.com/$cleanRepo/releases/download/v2.1.1/app-release.apk"),
+                ReleaseArchiveItem("2.0.3", "v2.0.3", "TgwsProxyAndroid v2.0.3", "Базовый релиз v2.0 с Rust Tokio ядром.", "2026-06-20", false, "https://github.com/$cleanRepo/releases/download/v2.0.3/app-release.apk"),
+            )
+        }
+    }
+
+    private fun checkLatestViaApi(repo: String, currentVersion: String, channel: AppChannel): UpdateInfo? {
+        if (channel == AppChannel.Beta) {
+            val json = httpGet(
+                url = "https://api.github.com/repos/$repo/releases?per_page=5",
+                accept = "application/vnd.github+json",
+            )
+            val array = org.json.JSONArray(json)
+            if (array.length() > 0) {
+                for (i in 0 until array.length()) {
+                    val root = array.getJSONObject(i)
+                    val latestVersion = root.optString("tag_name").trim().removePrefix("v")
+                    val releaseNotes = root.optString("body").trim()
+                    val isPrerelease = root.optBoolean("prerelease", false)
+                    val assets = root.optJSONArray("assets")
+                    if (assets != null) {
+                        for (j in 0 until assets.length()) {
+                            val asset = assets.getJSONObject(j)
+                            val name = asset.optString("name")
+                            val apkUrl = asset.optString("browser_download_url")
+                            if (name.endsWith(".apk", ignoreCase = true) && apkUrl.isNotBlank()) {
+                                if (isNewer(latestVersion, currentVersion)) {
+                                    return UpdateInfo(latestVersion, apkUrl, releaseNotes, isPrerelease)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         val json = httpGet(
             url = "https://api.github.com/repos/$repo/releases/latest",
             accept = "application/vnd.github+json",
@@ -50,13 +171,14 @@ object UpdateChecker {
         val root = JSONObject(json)
         val latestVersion = root.optString("tag_name").trim().removePrefix("v")
         val releaseNotes = root.optString("body").trim()
+        val isPrerelease = root.optBoolean("prerelease", false)
         val assets = root.getJSONArray("assets")
         for (i in 0 until assets.length()) {
             val asset = assets.getJSONObject(i)
             val name = asset.optString("name")
             val apkUrl = asset.optString("browser_download_url")
             if (name.endsWith(".apk", ignoreCase = true) && apkUrl.isNotBlank()) {
-                return if (isNewer(latestVersion, currentVersion)) UpdateInfo(latestVersion, apkUrl, releaseNotes) else null
+                return if (isNewer(latestVersion, currentVersion)) UpdateInfo(latestVersion, apkUrl, releaseNotes, isPrerelease) else null
             }
         }
         error("Latest GitHub release has no APK asset")
@@ -79,6 +201,10 @@ object UpdateChecker {
         if (latestVersion.isBlank()) error("GitHub latest tag not found")
         val apkUrl = "https://github.com/$repo/releases/download/v$latestVersion/TgwsProxyAndroid-v$latestVersion-release.apk"
         return if (isNewer(latestVersion, currentVersion)) UpdateInfo(latestVersion, apkUrl) else null
+    }
+
+    fun downloadReleaseApk(context: Context, release: ReleaseArchiveItem): File {
+        return downloadApk(context, UpdateInfo(release.version, release.apkUrl, release.releaseNotes, release.isPrerelease))
     }
 
     fun downloadApk(context: Context, info: UpdateInfo): File {

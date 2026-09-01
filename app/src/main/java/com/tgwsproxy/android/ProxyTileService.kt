@@ -25,14 +25,32 @@ class ProxyTileService : TileService() {
             return
         }
 
+        val tile = qsTile
         if (isRunning) {
+            // Optimistic update
+            if (tile != null) {
+                tile.state = Tile.STATE_INACTIVE
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    tile.subtitle = "Остановка..."
+                }
+                tile.updateTile()
+            }
             val stopIntent = Intent(this, ProxyService::class.java).apply {
                 action = ProxyService.ACTION_STOP
             }
             startService(stopIntent)
         } else {
+            // Optimistic update
+            if (tile != null) {
+                tile.state = Tile.STATE_ACTIVE
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    tile.subtitle = "Запуск..."
+                }
+                tile.updateTile()
+            }
+
             val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
-            val secret = prefs.getString(ProxyService.EXTRA_SECRET, "") ?: ""
+            val cleanSecret = SecureSecretStore.getOrCreate(this)
             val fakeTlsDomain = prefs.getString(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "") ?: ""
             val cfWorkerDomain = prefs.getString(ProxyService.EXTRA_CF_WORKER_DOMAIN, "") ?: ""
             val cfEnabled = prefs.getBoolean(ProxyService.EXTRA_CF_ENABLED, true)
@@ -43,7 +61,6 @@ class ProxyTileService : TileService() {
 
             val cleanFakeTls = ProxyConfig.normalizeDomain(fakeTlsDomain)
             val cleanCfDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
-            val cleanSecret = if (ProxyConfig.isValidSecret(secret)) secret else ProxyConfig.generateSecret()
 
             val startIntent = Intent(this, ProxyService::class.java).apply {
                 putExtra(ProxyService.EXTRA_SECRET, cleanSecret)
@@ -77,21 +94,23 @@ class ProxyTileService : TileService() {
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "${ProxyConfig.HOST}:${ProxyConfig.PORT}"
+                    val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
+                    val isLan = prefs.getBoolean(ProxyService.EXTRA_ALLOW_LAN, false)
+                    tile.subtitle = if (isLan) "0.0.0.0:${ProxyConfig.PORT}" else "${ProxyConfig.HOST}:${ProxyConfig.PORT}"
                 }
             }
             isStarting -> {
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "Starting..."
+                    tile.subtitle = "Запуск..."
                 }
             }
             else -> {
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "Stopped"
+                    tile.subtitle = "Остановлен"
                 }
             }
         }

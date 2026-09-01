@@ -155,7 +155,21 @@ class ProxyService : Service() {
             return START_NOT_STICKY
         }
 
-        if (!nativeRunning.get() && nativeInitializing.compareAndSet(false, true)) {
+        if (nativeRunning.get()) {
+            val paramsChanged = (providedSecret != null && providedSecret != lastSecret) ||
+                cfDomain != lastCfDomain ||
+                cfEnabled != lastCfEnabled ||
+                poolSize != lastPoolSize ||
+                dcIps != lastDcIps
+            if (paramsChanged && nativeInitializing.compareAndSet(false, true)) {
+                ProxyLogger.i("Parameters changed while running -> hot restarting proxy core")
+                ProxyServiceStatus.isStarting = true
+                serviceScope.launch {
+                    stopNativeProxy()
+                    resolveSecretAndStart(providedSecret, cfDomain, cfEnabled, poolSize, dcIps, startId)
+                }
+            }
+        } else if (nativeInitializing.compareAndSet(false, true)) {
             ProxyServiceStatus.isStarting = true
             resolveSecretAndStart(providedSecret, cfDomain, cfEnabled, poolSize, dcIps, startId)
         }

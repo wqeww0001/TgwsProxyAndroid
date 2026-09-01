@@ -104,6 +104,8 @@ import androidx.core.net.toUri
 import androidx.compose.foundation.Canvas
 import com.tgwsproxy.android.benchmark.DomainBenchmark
 import com.tgwsproxy.android.benchmark.DomainPingResult
+import com.tgwsproxy.android.AppChannel
+import com.tgwsproxy.android.ReleaseArchiveItem
 import com.tgwsproxy.android.config.ProxyProfile
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
@@ -431,6 +433,19 @@ private fun ProxyScreen(
     var autoStartProxy by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_START_PROXY_PREF, false)) }
     var allowLan by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_ALLOW_LAN, false)) }
     var smartStandby by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_SMART_STANDBY, true)) }
+    var appChannel by rememberSaveable {
+        mutableStateOf(
+            AppChannel.entries.firstOrNull {
+                it.key == context.getProxyPref("app_channel", AppChannel.Stable.key)
+            } ?: AppChannel.Stable
+        )
+    }
+    var showBetaWarningDialog by remember { mutableStateOf(false) }
+    var showArchiveDialog by remember { mutableStateOf(false) }
+    var archiveReleases by remember { mutableStateOf<List<ReleaseArchiveItem>>(emptyList()) }
+    var isArchiveLoading by remember { mutableStateOf(false) }
+    var rollbackConfirmRelease by remember { mutableStateOf<ReleaseArchiveItem?>(null) }
+    var isRollbackDownloading by remember { mutableStateOf(false) }
     var showQrDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
@@ -450,20 +465,56 @@ private fun ProxyScreen(
             val result = runCatching {
                 val current = UpdateChecker.currentVersion(context)
                 val update = withContext(Dispatchers.IO) {
-                    UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current)
+                    UpdateChecker.checkLatest(UpdateChecker.DEFAULT_GITHUB_REPO, current, appChannel)
                 }
                 if (update == null) {
                     availableUpdate = null
-                    "${text.noUpdateFound}: $current"
+                    val channelLabel = if (language == AppLanguage.Ru) appChannel.ruTitle else appChannel.enTitle
+                    "${text.noUpdateFound}: $current ($channelLabel)"
                 } else {
                     val shouldNotify = availableUpdate?.version != update.version
                     availableUpdate = update
                     if (!manual && shouldNotify) context.notifyAvailableUpdate(update, text)
-                    if (language == AppLanguage.Ru) "Доступно обновление ${update.version}" else "Update ${update.version} is available"
+                    val tagLabel = if (update.isPrerelease) (if (language == AppLanguage.Ru) "Бета" else "Beta") else (if (language == AppLanguage.Ru) "Релиз" else "Release")
+                    if (language == AppLanguage.Ru) "Доступно обновление ${update.version} ($tagLabel)" else "Update ${update.version} available ($tagLabel)"
                 }
             }.getOrElse { "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}" }
             updateMessage = result
             updateBusy = false
+        }
+    }
+
+    fun loadReleaseArchive() {
+        if (isArchiveLoading) return
+        isArchiveLoading = true
+        scope.launch {
+            archiveReleases = withContext(Dispatchers.IO) {
+                UpdateChecker.fetchAllReleases()
+            }
+            isArchiveLoading = false
+        }
+    }
+
+    fun rollbackToRelease(release: ReleaseArchiveItem) {
+        if (isRollbackDownloading) return
+        isRollbackDownloading = true
+        Toast.makeText(context, if (language == AppLanguage.Ru) "Скачивание версии ${release.version}..." else "Downloading version ${release.version}...", Toast.LENGTH_SHORT).show()
+        scope.launch {
+            val success = runCatching {
+                val apk = withContext(Dispatchers.IO) {
+                    UpdateChecker.downloadReleaseApk(context, release)
+                }
+                UpdateChecker.installApk(context, apk)
+                true
+            }.getOrElse {
+                Toast.makeText(context, "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+                false
+            }
+            isRollbackDownloading = false
+            if (success) {
+                rollbackConfirmRelease = null
+                showArchiveDialog = false
+            }
         }
     }
 
@@ -509,6 +560,87 @@ private fun ProxyScreen(
             runUpdateCheck(manual = false)
             delay((autoUpdateValue.toLong() * autoUpdateUnit.minutes * 60_000L).coerceAtMost(365L * 24 * 60 * 60_000L))
         }
+    }
+
+    if (showBetaWarningDialog) {
+        AlertDialog(
+            onDismissRequest = { showBetaWarningDialog = false },
+            title = { Text(if (language == AppLanguage.Ru) "🧪 Включение Бета-канала" else "🧪 Enable Beta Channel") },
+            text = {
+                Text(
+                    if (language == AppLanguage.Ru) {
+                        "⚠️ Внимание: бета-сборки и снапшоты предназначены исключительно для предварительного тестирования.\n\nУстановка осуществляется на свой страх и риск — возможна нестабильная работа, ошибки прокси и повышенный расход батареи!\n\nВы действительно хотите переключиться на Бета-канал?"
+                    } else {
+                        "⚠️ Warning: Beta builds and snapshots are intended for preliminary testing only.\n\nInstallation is at your own risk — builds may contain bugs, crashes, or higher battery drain!\n\nAre you sure you want to switch to the Beta channel?"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        appChannel = AppChannel.Beta
+                        context.saveProxyPref("app_channel", AppChannel.Beta.key)
+                        showBetaWarningDialog = false
+                        runUpdateCheck(manual = true)
+                    }
+                ) {
+                    Text(
+                        if (language == AppLanguage.Ru) "Включить бету" else "Enable Beta",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBetaWarningDialog = false }) {
+                    Text(if (language == AppLanguage.Ru) "Отмена" else "Cancel")
+                }
+            },
+        )
+    }
+
+    if (showArchiveDialog) {
+        VersionArchiveDialog(
+            language = language,
+            currentVersion = UpdateChecker.currentVersion(context),
+            releases = archiveReleases,
+            isLoading = isArchiveLoading,
+            onRefresh = { loadReleaseArchive() },
+            onRollback = { rollbackConfirmRelease = it },
+            onDismiss = { showArchiveDialog = false },
+        )
+    }
+
+    if (rollbackConfirmRelease != null) {
+        val targetRelease = rollbackConfirmRelease!!
+        AlertDialog(
+            onDismissRequest = { if (!isRollbackDownloading) rollbackConfirmRelease = null },
+            title = { Text(if (language == AppLanguage.Ru) "⏪ Откат на версию ${targetRelease.version}" else "⏪ Rollback to ${targetRelease.version}") },
+            text = {
+                Text(
+                    if (language == AppLanguage.Ru) {
+                        "Вы действительно хотите скачать и установить версию ${targetRelease.version}?\n\nВаши сохранённые настройки и секретный ключ будут сохранены."
+                    } else {
+                        "Are you sure you want to download and install version ${targetRelease.version}?\n\nYour saved settings and secret key will be preserved."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { rollbackToRelease(targetRelease) },
+                    enabled = !isRollbackDownloading,
+                ) {
+                    Text(if (isRollbackDownloading) (if (language == AppLanguage.Ru) "Скачивание..." else "Downloading...") else (if (language == AppLanguage.Ru) "Откатить и установить" else "Rollback & Install"))
+                }
+            },
+            dismissButton = {
+                if (!isRollbackDownloading) {
+                    TextButton(onClick = { rollbackConfirmRelease = null }) {
+                        Text(if (language == AppLanguage.Ru) "Отмена" else "Cancel")
+                    }
+                }
+            },
+        )
     }
 
     if (showTelegramClientDialog) {
@@ -820,6 +952,20 @@ private fun ProxyScreen(
                             smartStandby = it
                             context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, it)
                         },
+                        appChannel = appChannel,
+                        onChannelChange = { newChannel ->
+                            if (newChannel == AppChannel.Beta && appChannel != AppChannel.Beta) {
+                                showBetaWarningDialog = true
+                            } else {
+                                appChannel = newChannel
+                                context.saveProxyPref("app_channel", newChannel.key)
+                                runUpdateCheck(manual = true)
+                            }
+                        },
+                        onOpenVersionArchive = {
+                            showArchiveDialog = true
+                            loadReleaseArchive()
+                        },
                         onApplyProfile = { profile ->
                             fakeTlsDomain = profile.fakeTlsDomain
                             cfWorkerDomain = profile.cfWorkerDomain
@@ -833,7 +979,12 @@ private fun ProxyScreen(
                             context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
                             context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
                             if (profile.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
-                            Toast.makeText(context, if (language == AppLanguage.Ru) "Применен профиль: ${profile.name(true)}" else "Applied profile: ${profile.name(false)}", Toast.LENGTH_SHORT).show()
+                            if (proxyStatus.isRunning) {
+                                context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings, allowLan, smartStandby)
+                                Toast.makeText(context, if (language == AppLanguage.Ru) "Профиль ${profile.name(true)} применен (прокси перезапущен)" else "Applied profile ${profile.name(false)} (proxy reloaded)", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, if (language == AppLanguage.Ru) "Применен профиль: ${profile.name(true)}" else "Applied profile: ${profile.name(false)}", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         onOpenExport = { showExportDialog = true },
                         onOpenImport = { showImportDialog = true },
@@ -992,6 +1143,9 @@ private fun SettingsPage(
     text: UiStrings,
     language: AppLanguage,
     onLanguageChange: (AppLanguage) -> Unit,
+    appChannel: AppChannel,
+    onChannelChange: (AppChannel) -> Unit,
+    onOpenVersionArchive: () -> Unit,
     fakeTlsDomain: String,
     onFakeTlsDomainChange: (String) -> Unit,
     cfWorkerDomain: String,
@@ -1031,9 +1185,12 @@ private fun SettingsPage(
     onCheckUpdate: () -> Unit,
     onInstallUpdate: () -> Unit,
 ) {
-    PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(LocalContext.current))
+    val context = LocalContext.current
+    PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(context) + " (Build #" + UpdateChecker.currentVersionCode(context) + ")")
     LanguageCard(text, language, onLanguageChange)
     ThemePickerCard(language, themeMode, onThemeModeChange)
+    BuildMetadataCard(language, appChannel)
+    UpdateChannelCard(language, appChannel, onChannelChange, onOpenVersionArchive)
     PresetsAndBackupCard(
         language = language,
         enabled = enabled,
@@ -1058,7 +1215,13 @@ private fun SettingsPage(
     DomainBenchmarkCard(
         language = language,
         currentDomain = fakeTlsDomain,
-        onSelectDomain = onFakeTlsDomainChange,
+        onSelectDomain = { newDomain ->
+            onFakeTlsDomainChange(newDomain)
+            if (enabled) {
+                context.startProxyService(secret, newDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings, allowLan, smartStandby)
+                Toast.makeText(context, if (language == AppLanguage.Ru) "Применен домен: $newDomain (прокси перезапущен)" else "Applied domain: $newDomain (proxy reloaded)", Toast.LENGTH_SHORT).show()
+            }
+        },
     )
     LanSettingsCard(
         language = language,
@@ -1803,6 +1966,322 @@ private fun PageTitle(title: String, subtitle: String) {
         Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
         Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+
+@Composable
+private fun BuildMetadataCard(language: AppLanguage, channel: AppChannel) {
+    val context = LocalContext.current
+    val isRu = language == AppLanguage.Ru
+    val versionName = UpdateChecker.currentVersion(context)
+    val versionCode = UpdateChecker.currentVersionCode(context)
+    val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "Universal"
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (isRu) "Информация о сборке" else "Build Information",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (channel == AppChannel.Beta) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    Text(
+                        if (channel == AppChannel.Beta) (if (isRu) "🧪 БЕТА / СНАПШОТ" else "🧪 BETA SNAPSHOT") else (if (isRu) "🟢 СТАБИЛЬНАЯ" else "🟢 STABLE"),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (channel == AppChannel.Beta) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(if (isRu) "Версия" else "Version", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("v$versionName", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(if (isRu) "Номер сборки" else "Build Code", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("#$versionCode", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(if (isRu) "Архитектура" else "Arch (ABI)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(abi.substringBefore("-"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateChannelCard(
+    language: AppLanguage,
+    channel: AppChannel,
+    onChannelChange: (AppChannel) -> Unit,
+    onOpenArchive: () -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                if (isRu) "Канал обновлений и архив" else "Update Channel & Archive",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AppChannel.entries.forEach { item ->
+                    val selected = channel == item
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { onChannelChange(item) },
+                        border = BorderStroke(
+                            if (selected) 2.dp else 1.dp,
+                            if (selected) (if (item == AppChannel.Beta) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary) else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        ),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (selected) (if (item == AppChannel.Beta) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)) else Color.Transparent,
+                        ),
+                    ) {
+                        Text(
+                            if (item == AppChannel.Beta) (if (isRu) "🧪 Бета / Снапшот" else "🧪 Beta Snapshot") else (if (isRu) "🟢 Стабильная" else "🟢 Stable"),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+
+            if (channel == AppChannel.Beta) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Text("⚠️", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (isRu) {
+                                "Внимание: вы используете тестовый Бета-канал. Сборки могут содержать экспериментальный код и работать нестабильно. Установка на свой страх и риск!"
+                            } else {
+                                "Warning: You are using the experimental Beta channel. Builds may be unstable. Install at your own risk!"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
+                }
+            }
+
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onOpenArchive,
+            ) {
+                ButtonText(if (isRu) "📜 Архив всех версий и откат (Rollback)" else "📜 Version Archive & Rollback")
+            }
+        }
+    }
+}
+
+@Composable
+private fun VersionArchiveDialog(
+    language: AppLanguage,
+    currentVersion: String,
+    releases: List<ReleaseArchiveItem>,
+    isLoading: Boolean,
+    onRefresh: () -> Unit,
+    onRollback: (ReleaseArchiveItem) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (isRu) "Архив версий и откат" else "Version History & Rollback",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        if (isRu) "Текущая версия: v$currentVersion" else "Current version: v$currentVersion",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = onRefresh, enabled = !isLoading) {
+                    Text(if (isLoading) "⏳" else "🔄", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        },
+        text = {
+            Box(modifier = Modifier.fillMaxWidth().height(420.dp)) {
+                if (isLoading && releases.isEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(if (isRu) "Загрузка версий с GitHub..." else "Loading releases from GitHub...", style = MaterialTheme.typography.bodySmall)
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        releases.forEach { release ->
+                            val isCurrent = release.version.equals(currentVersion, ignoreCase = true)
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+                                ),
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            "v${release.version}",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            if (isCurrent) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                ) {
+                                                    Text(
+                                                        if (isRu) "УСТАНОВЛЕНО" else "INSTALLED",
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onPrimary,
+                                                        fontWeight = FontWeight.Bold,
+                                                    )
+                                                }
+                                            }
+                                            if (release.isPrerelease) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.errorContainer,
+                                                ) {
+                                                    Text(
+                                                        "BETA",
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                                        fontWeight = FontWeight.Bold,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (release.publishedAt.isNotBlank()) {
+                                        Text(
+                                            if (isRu) "Выпущено: ${release.publishedAt}" else "Released: ${release.publishedAt}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+
+                                    if (release.releaseNotes.isNotBlank()) {
+                                        Text(
+                                            release.releaseNotes.take(300),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 4,
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End,
+                                    ) {
+                                        Button(
+                                            onClick = { onRollback(release) },
+                                            enabled = !isCurrent,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (isCurrent) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primary,
+                                            ),
+                                        ) {
+                                            Text(
+                                                if (isCurrent) (if (isRu) "Текущая" else "Current") else (if (isRu) "Откатить на v${release.version}" else "Rollback to v${release.version}"),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (isRu) "Закрыть" else "Close")
+            }
+        },
+    )
 }
 
 @Composable

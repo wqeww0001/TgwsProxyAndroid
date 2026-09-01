@@ -30,11 +30,21 @@ object DomainBenchmark {
         PresetDomain("ozon.ru", "Ozon (FakeTLS)", "Ozon (FakeTLS)"),
     )
 
+    private val FALLBACK_IPS = mapOf(
+        "cloudflare.com" to "104.16.132.229",
+        "vk.com" to "87.240.137.164",
+        "yandex.ru" to "77.88.55.77",
+        "sberbank.ru" to "194.54.14.131",
+        "gosuslugi.ru" to "109.207.1.97",
+        "t.me" to "149.154.167.220",
+        "ozon.ru" to "178.248.237.147",
+    )
+
     suspend fun pingDomain(
         domain: String,
         description: String = "",
         port: Int = 443,
-        timeoutMs: Int = 1500,
+        timeoutMs: Int = 3500,
     ): DomainPingResult = withContext(Dispatchers.IO) {
         val cleanDomain = ProxyConfig.normalizeDomain(domain)
         if (cleanDomain.isBlank()) {
@@ -44,11 +54,27 @@ object DomainBenchmark {
         val start = System.currentTimeMillis()
         try {
             Socket().use { socket ->
+                socket.soTimeout = timeoutMs
                 socket.connect(InetSocketAddress(cleanDomain, port), timeoutMs)
                 val duration = System.currentTimeMillis() - start
-                DomainPingResult(cleanDomain, duration.coerceAtLeast(1), true, description)
+                return@withContext DomainPingResult(cleanDomain, duration.coerceAtLeast(1), true, description)
             }
         } catch (_: Throwable) {
+            // If hostname lookup failed or timed out, try fallback IP if known
+            val fallbackIp = FALLBACK_IPS[cleanDomain.lowercase()]
+            if (fallbackIp != null) {
+                try {
+                    val fallbackStart = System.currentTimeMillis()
+                    Socket().use { socket ->
+                        socket.soTimeout = timeoutMs
+                        socket.connect(InetSocketAddress(fallbackIp, port), timeoutMs)
+                        val duration = System.currentTimeMillis() - fallbackStart
+                        return@withContext DomainPingResult(cleanDomain, duration.coerceAtLeast(1), true, description)
+                    }
+                } catch (_: Throwable) {
+                    // ignore
+                }
+            }
             DomainPingResult(cleanDomain, -1, false, description)
         }
     }
