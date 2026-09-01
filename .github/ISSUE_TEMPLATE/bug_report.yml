@@ -1,0 +1,48 @@
+﻿name: 🐛 Отчет об ошибке (Bug Report)
+description: Сообщить о неполадке или сбое в работе TgwsProxyAndroid
+title: "[BUG]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что помогаете делать TgwsProxyAndroid лучше! Пожалуйста, заполните форму ниже.
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения (App Version)
+      description: Укажите версию (например, v2.4.1)
+      placeholder: "2.4.1 (26)"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Устройство и версия Android (Device & OS)
+      placeholder: "Xiaomi 13, Android 14 / Samsung Galaxy S23, OneUI 6"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание проблемы (Description)
+      description: Подробно опишите, что пошло не так.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги для воспроизведения (Steps to Reproduce)
+      description: Опишите последовательность действий.
+      placeholder: |
+        1. Открыть приложение
+        2. Нажать 'Запустить'
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи (Logs)
+      description: Логи из вкладки «Журнал» (по желанию).
+      render: shell

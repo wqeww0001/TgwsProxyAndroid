@@ -1,0 +1,28 @@
+﻿name: 💡 Предложение новой функции (Feature Request)
+description: Предложить новую идею или улучшение для TgwsProxyAndroid
+title: "[FEAT]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Поделитесь вашей идеей по улучшению приложения!
+  - type: textarea
+    id: feature_summary
+    attributes:
+      label: Описание идеи (Feature Summary)
+      description: Какую задачу или проблему решает данное улучшение?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Предлагаемое решение (Proposed Solution)
+      description: Как, по вашему мнению, это должно работать?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативные варианты (Alternatives)
+      description: Рассматривали ли вы другие подходы?
