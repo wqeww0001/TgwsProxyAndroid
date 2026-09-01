@@ -28,17 +28,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install Android SDK packages
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" "ndk;27.2.12479018"
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" || true
 
       - name: Test Rust core
         run: cargo test --locked
 
       - name: Build Android native libraries
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
+          NDK_DIR=$(find "$ANDROID_HOME/ndk" -maxdepth 1 -mindepth 1 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$NDK_DIR" ]; then
+            NDK_DIR="$ANDROID_NDK_ROOT"
+          fi
+          export ANDROID_NDK_HOME="$NDK_DIR"
+          echo "Using ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
           cargo install cargo-ndk --locked
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 --platform 26 -o app/src/main/jniLibs build --release --locked
 
       - name: Test and lint Android app
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace
