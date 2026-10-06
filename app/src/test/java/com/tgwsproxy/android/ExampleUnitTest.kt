@@ -59,9 +59,9 @@ class ExampleUnitTest {
         assertEquals(17, dd17!!.size)
         // Marked secret roundtrip (0x70 prefix)
         val marked16 = WebProxyProtocol.encodeMarkedSecret(raw16)
-        assertEquals("pAAECAwQFBgcICQoLDA0ODw", marked16)
+        assertEquals("cAABAgMEBQYHCAkKCwwNDg8", marked16)
         val marked17 = WebProxyProtocol.encodeMarkedSecret(dd17)
-        assertEquals("p3QABAgMEBQYHCAkKCwwNDg8", marked17)
+        assertEquals("cN0AAQIDBAUGBwgJCgsMDQ4P", marked17)
     }
 
     @Test
@@ -73,7 +73,7 @@ class ExampleUnitTest {
         assertEquals("", rootEp.basePath)
         assertEquals("dd000102030405060708090a0b0c0d0e0f", rootEp.localTelegramSecretHex)
 
-        val basePathLink = "https://t.me/webproxy?server=example.com%2Fportal&secret=pAAECAwQFBgcICQoLDA0ODw"
+        val basePathLink = "https://t.me/webproxy?server=example.com%2Fportal&secret=cAABAgMEBQYHCAkKCwwNDg8"
         val basePathEp = WebProxyProtocol.parseWebProxyLink(basePathLink)
         assertNotNull(basePathEp)
         assertEquals("example.com", basePathEp!!.host)

@@ -340,32 +340,42 @@ object WebProxyEngine {
     ) {
         val closed = AtomicBoolean(false)
         private var sendWindowBytes: Long = WebProxyProtocol.INITIAL_STREAM_WINDOW.toLong()
-        private val windowLock = Object()
+        private val windowLock = java.util.concurrent.locks.ReentrantLock()
+        private val windowCondition = windowLock.newCondition()
         val laneOutbound = Channel<ByteArray>(capacity = 256)
 
         fun consumeSendWindow(requested: Int): Int {
-            synchronized(windowLock) {
+            windowLock.lock()
+            try {
                 while (sendWindowBytes <= 0L && !closed.get()) {
-                    windowLock.wait(500)
+                    windowCondition.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
                 }
                 if (closed.get()) return -1
                 val granted = minOf(requested.toLong(), sendWindowBytes).toInt()
                 sendWindowBytes -= granted
                 return granted
+            } finally {
+                windowLock.unlock()
             }
         }
 
         fun grantSendWindow(delta: Long) {
-            synchronized(windowLock) {
+            windowLock.lock()
+            try {
                 sendWindowBytes += delta
-                windowLock.notifyAll()
+                windowCondition.signalAll()
+            } finally {
+                windowLock.unlock()
             }
         }
 
         fun markClosed() {
             if (closed.compareAndSet(false, true)) {
-                synchronized(windowLock) {
-                    windowLock.notifyAll()
+                windowLock.lock()
+                try {
+                    windowCondition.signalAll()
+                } finally {
+                    windowLock.unlock()
                 }
                 laneOutbound.close()
                 runCatching { socket.close() }

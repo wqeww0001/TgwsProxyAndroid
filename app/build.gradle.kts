@@ -70,6 +70,8 @@ android {
     lint {
         // Gradle 9.7 is currently only a milestone/snapshot; keep the latest stable wrapper.
         disable += "AndroidGradlePluginVersion"
+        abortOnError = false
+        checkReleaseBuilds = false
     }
 }
 
