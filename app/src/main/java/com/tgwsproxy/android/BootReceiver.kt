@@ -14,13 +14,14 @@ class BootReceiver : BroadcastReceiver() {
 
         runCatching {
             val serviceIntent = Intent(context, ProxyService::class.java).apply {
-                putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, preferences.getString(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "").orEmpty())
                 putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, preferences.getString(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN).orEmpty())
                 putExtra(ProxyService.EXTRA_CF_ENABLED, preferences.getBoolean(ProxyService.EXTRA_CF_ENABLED, true))
-                putExtra(ProxyService.EXTRA_ALLOW_LAN, preferences.getBoolean(ProxyService.EXTRA_ALLOW_LAN, false))
                 putExtra(ProxyService.EXTRA_SMART_STANDBY, preferences.getBoolean(ProxyService.EXTRA_SMART_STANDBY, true))
                 putExtra(ProxyService.EXTRA_POOL_SIZE, preferences.getString(ProxyService.EXTRA_POOL_SIZE, "4")?.toIntOrNull() ?: 4)
                 putExtra(ProxyService.EXTRA_DC_IPS, preferences.getString(ProxyService.EXTRA_DC_IPS, "").orEmpty())
+                putExtra(ProxyService.EXTRA_WEB_PROXY_ENABLED, preferences.getBoolean(ProxyService.EXTRA_WEB_PROXY_ENABLED, false))
+                putExtra(ProxyService.EXTRA_WEB_PROXY_SERVER, preferences.getString(ProxyService.EXTRA_WEB_PROXY_SERVER, "").orEmpty())
+                putExtra(ProxyService.EXTRA_WEB_PROXY_SECRET, preferences.getString(ProxyService.EXTRA_WEB_PROXY_SECRET, "").orEmpty())
             }
             ContextCompat.startForegroundService(context, serviceIntent)
             ProxyLogger.i("Auto-start requested after ${intent.action}")

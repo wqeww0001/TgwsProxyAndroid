@@ -27,7 +27,6 @@ class ProxyTileService : TileService() {
 
         val tile = qsTile
         if (isRunning) {
-            // Optimistic update
             if (tile != null) {
                 tile.state = Tile.STATE_INACTIVE
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -40,7 +39,6 @@ class ProxyTileService : TileService() {
             }
             startService(stopIntent)
         } else {
-            // Optimistic update
             if (tile != null) {
                 tile.state = Tile.STATE_ACTIVE
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -51,27 +49,28 @@ class ProxyTileService : TileService() {
 
             val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
             val cleanSecret = SecureSecretStore.getOrCreate(this)
-            val fakeTlsDomain = prefs.getString(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "") ?: ""
             val cfWorkerDomain = prefs.getString(ProxyService.EXTRA_CF_WORKER_DOMAIN, "") ?: ""
             val cfEnabled = prefs.getBoolean(ProxyService.EXTRA_CF_ENABLED, true)
-            val allowLan = prefs.getBoolean(ProxyService.EXTRA_ALLOW_LAN, false)
             val smartStandby = prefs.getBoolean(ProxyService.EXTRA_SMART_STANDBY, true)
             val poolSize = prefs.getString(ProxyService.EXTRA_POOL_SIZE, "4")?.toIntOrNull() ?: 4
             val dcIps = prefs.getString(ProxyService.EXTRA_DC_IPS, "") ?: ""
+            val webProxyEnabled = prefs.getBoolean(ProxyService.EXTRA_WEB_PROXY_ENABLED, false)
+            val webProxyServer = prefs.getString(ProxyService.EXTRA_WEB_PROXY_SERVER, "") ?: ""
+            val webProxySecret = prefs.getString(ProxyService.EXTRA_WEB_PROXY_SECRET, "") ?: ""
 
-            val cleanFakeTls = ProxyConfig.normalizeDomain(fakeTlsDomain)
             val cleanCfDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
 
             val startIntent = Intent(this, ProxyService::class.java).apply {
                 putExtra(ProxyService.EXTRA_SECRET, cleanSecret)
-                putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTls)
                 putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanCfDomain)
                 putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
-                putExtra(ProxyService.EXTRA_ALLOW_LAN, allowLan)
                 putExtra(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
                 putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
                 putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcIps))
                 putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanCfDomain)
+                putExtra(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
+                putExtra(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                putExtra(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -95,8 +94,8 @@ class ProxyTileService : TileService() {
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
-                    val isLan = prefs.getBoolean(ProxyService.EXTRA_ALLOW_LAN, false)
-                    tile.subtitle = if (isLan) "0.0.0.0:${ProxyConfig.PORT}" else "${ProxyConfig.HOST}:${ProxyConfig.PORT}"
+                    val isWebProxy = prefs.getBoolean(ProxyService.EXTRA_WEB_PROXY_ENABLED, false)
+                    tile.subtitle = if (isWebProxy) "Web Proxy · ${ProxyConfig.PORT}" else "${ProxyConfig.HOST}:${ProxyConfig.PORT}"
                 }
             }
             isStarting -> {

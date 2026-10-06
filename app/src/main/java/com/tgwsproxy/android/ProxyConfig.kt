@@ -1,6 +1,8 @@
-﻿package com.tgwsproxy.android
+package com.tgwsproxy.android
 
+import com.tgwsproxy.android.webproxy.WebProxyProtocol
 import java.security.SecureRandom
+import java.util.Locale
 
 object ProxyConfig {
     const val HOST = "127.0.0.1"
@@ -14,17 +16,36 @@ object ProxyConfig {
     }
 
     fun isValidSecret(value: String): Boolean {
-        return value.length == 32 && value.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+        val clean = value.trim()
+        return clean.length == 32 && clean.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
     }
 
-    fun telegramProxyLink(secret: String, fakeTlsDomain: String = ""): String {
-        val cleanDomain = fakeTlsDomain.trim()
-        val proxySecret = if (cleanDomain.isBlank()) {
-            "dd$secret"
+    fun telegramProxyLink(secret: String): String {
+        val clean = secret.trim().lowercase(Locale.ROOT)
+        val proxySecret = if (clean.startsWith("dd") && clean.length == 34) {
+            clean
         } else {
-            "ee$secret${cleanDomain.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }}"
+            "dd$clean"
         }
         return "tg://proxy?server=$HOST&port=$PORT&secret=$proxySecret"
+    }
+
+    fun telegramProxyLinkForMode(
+        localSecret: String,
+        webProxyEnabled: Boolean,
+        webProxyServer: String,
+        webProxySecret: String,
+    ): String {
+        if (webProxyEnabled) {
+            val endpoint = WebProxyProtocol.parseEndpointInput(
+                serverInput = webProxyServer,
+                secretInput = webProxySecret.ifBlank { localSecret },
+            )
+            if (endpoint != null) {
+                return telegramProxyLink(endpoint.localTelegramSecretHex)
+            }
+        }
+        return telegramProxyLink(localSecret)
     }
 
     fun cleanDomain(value: String): String {
@@ -35,7 +56,7 @@ object ProxyConfig {
             .substringBefore(':')
             .trim('/')
             .trimEnd('.')
-            .lowercase()
+            .lowercase(Locale.ROOT)
     }
 
     fun normalizeDomain(value: String): String {

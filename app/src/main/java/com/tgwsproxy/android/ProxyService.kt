@@ -18,6 +18,8 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.edit
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
+import com.tgwsproxy.android.webproxy.WebProxyEngine
+import com.tgwsproxy.android.webproxy.WebProxyProtocol
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,12 +56,14 @@ class ProxyService : Service() {
     @Volatile private var lastCfEnabled: Boolean = true
     @Volatile private var lastPoolSize: Int = DEFAULT_POOL_SIZE
     @Volatile private var lastDcIps: String = ""
+    @Volatile private var lastWebProxyEnabled: Boolean = false
+    @Volatile private var lastWebProxyServer: String = ""
+    @Volatile private var lastWebProxySecret: String = ""
     @Volatile private var consecutivePortFailures: Int = 0
     @Volatile private var lastRouteFailures: Long = 0
     @Volatile private var lastWsAttemptFailures: Long = 0
     @Volatile private var lastDownBytes: Long = 0
     @Volatile private var degradedStatsCycles: Int = 0
-    @Volatile private var allowLan: Boolean = false
     @Volatile private var smartStandby: Boolean = true
     @Volatile private var isScreenOff: Boolean = false
     @Volatile private var lastTrafficActiveAtMs: Long = System.currentTimeMillis()
@@ -114,8 +118,6 @@ class ProxyService : Service() {
         val providedSecret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf(ProxyConfig::isValidSecret)
         val cfEnabled = intent?.getBooleanExtra(EXTRA_CF_ENABLED, prefs.getBoolean(EXTRA_CF_ENABLED, true))
             ?: prefs.getBoolean(EXTRA_CF_ENABLED, true)
-        allowLan = intent?.getBooleanExtra(EXTRA_ALLOW_LAN, prefs.getBoolean(EXTRA_ALLOW_LAN, false))
-            ?: prefs.getBoolean(EXTRA_ALLOW_LAN, false)
         smartStandby = intent?.getBooleanExtra(EXTRA_SMART_STANDBY, prefs.getBoolean(EXTRA_SMART_STANDBY, true))
             ?: prefs.getBoolean(EXTRA_SMART_STANDBY, true)
         val poolSize = (intent?.getIntExtra(EXTRA_POOL_SIZE, -1) ?: -1)
@@ -129,24 +131,28 @@ class ProxyService : Service() {
             intent?.getStringExtra(EXTRA_CF_WORKER_DOMAIN)
                 ?: prefs.getString(EXTRA_CF_WORKER_DOMAIN, "").orEmpty(),
         )
-        val fakeTlsDomain = ProxyConfig.normalizeDomain(
-            intent?.getStringExtra(EXTRA_FAKE_TLS_DOMAIN)
-                ?: prefs.getString(EXTRA_FAKE_TLS_DOMAIN, "").orEmpty(),
-        )
         val dcIps = ProxyConfig.normalizeDcMappings(
             intent?.getStringExtra(EXTRA_DC_IPS)
                 ?: prefs.getString(EXTRA_DC_IPS, "").orEmpty(),
         ).takeIf(ProxyConfig::isValidDcMappings).orEmpty()
 
+        val webProxyEnabled = intent?.getBooleanExtra(EXTRA_WEB_PROXY_ENABLED, prefs.getBoolean(EXTRA_WEB_PROXY_ENABLED, false))
+            ?: prefs.getBoolean(EXTRA_WEB_PROXY_ENABLED, false)
+        val webProxyServer = (intent?.getStringExtra(EXTRA_WEB_PROXY_SERVER)
+            ?: prefs.getString(EXTRA_WEB_PROXY_SERVER, "").orEmpty()).trim()
+        val webProxySecret = (intent?.getStringExtra(EXTRA_WEB_PROXY_SECRET)
+            ?: prefs.getString(EXTRA_WEB_PROXY_SECRET, "").orEmpty()).trim()
+
         prefs.edit {
-            putString(EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
             putString(EXTRA_CF_WORKER_DOMAIN, cfDomain)
             putString(EXTRA_CF_DOMAIN, cfDomain)
             putBoolean(EXTRA_CF_ENABLED, cfEnabled)
-            putBoolean(EXTRA_ALLOW_LAN, allowLan)
             putBoolean(EXTRA_SMART_STANDBY, smartStandby)
             putString(EXTRA_POOL_SIZE, poolSize.toString())
             putString(EXTRA_DC_IPS, dcIps)
+            putBoolean(EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
+            putString(EXTRA_WEB_PROXY_SERVER, webProxyServer)
+            putString(EXTRA_WEB_PROXY_SECRET, webProxySecret)
         }
 
         if (startTime == 0L) startTime = System.currentTimeMillis()
@@ -160,18 +166,41 @@ class ProxyService : Service() {
                 cfDomain != lastCfDomain ||
                 cfEnabled != lastCfEnabled ||
                 poolSize != lastPoolSize ||
-                dcIps != lastDcIps
+                dcIps != lastDcIps ||
+                webProxyEnabled != lastWebProxyEnabled ||
+                webProxyServer != lastWebProxyServer ||
+                webProxySecret != lastWebProxySecret
             if (paramsChanged && nativeInitializing.compareAndSet(false, true)) {
                 ProxyLogger.i("Parameters changed while running -> hot restarting proxy core")
                 ProxyServiceStatus.isStarting = true
                 serviceScope.launch {
                     stopNativeProxy()
-                    resolveSecretAndStart(providedSecret, cfDomain, cfEnabled, poolSize, dcIps, startId)
+                    resolveSecretAndStart(
+                        providedSecret,
+                        cfDomain,
+                        cfEnabled,
+                        poolSize,
+                        dcIps,
+                        webProxyEnabled,
+                        webProxyServer,
+                        webProxySecret,
+                        startId,
+                    )
                 }
             }
         } else if (nativeInitializing.compareAndSet(false, true)) {
             ProxyServiceStatus.isStarting = true
-            resolveSecretAndStart(providedSecret, cfDomain, cfEnabled, poolSize, dcIps, startId)
+            resolveSecretAndStart(
+                providedSecret,
+                cfDomain,
+                cfEnabled,
+                poolSize,
+                dcIps,
+                webProxyEnabled,
+                webProxyServer,
+                webProxySecret,
+                startId,
+            )
         }
 
         return START_STICKY
@@ -221,7 +250,17 @@ class ProxyService : Service() {
         }
     }
 
-    private fun resolveSecretAndStart(providedSecret: String?, cfDomain: String, cfEnabled: Boolean, poolSize: Int, dcIps: String, startId: Int) {
+    private fun resolveSecretAndStart(
+        providedSecret: String?,
+        cfDomain: String,
+        cfEnabled: Boolean,
+        poolSize: Int,
+        dcIps: String,
+        webProxyEnabled: Boolean,
+        webProxyServer: String,
+        webProxySecret: String,
+        startId: Int,
+    ) {
         Thread({
             try {
                 val secret = providedSecret ?: SecureSecretStore.load(this).orEmpty()
@@ -233,7 +272,16 @@ class ProxyService : Service() {
                     stopSelfResult(startId)
                     return@Thread
                 }
-                startNativeProxy(secret, cfDomain, cfEnabled, poolSize, dcIps)
+                startNativeProxy(
+                    secret,
+                    cfDomain,
+                    cfEnabled,
+                    poolSize,
+                    dcIps,
+                    webProxyEnabled,
+                    webProxyServer,
+                    webProxySecret,
+                )
             } catch (t: Throwable) {
                 nativeInitializing.set(false)
                 ProxyServiceStatus.isStarting = false
@@ -246,7 +294,16 @@ class ProxyService : Service() {
         }
     }
 
-    private fun startNativeProxy(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int, dcIps: String) {
+    private fun startNativeProxy(
+        secret: String,
+        cfDomain: String,
+        cfEnabled: Boolean,
+        poolSize: Int,
+        dcIps: String,
+        webProxyEnabled: Boolean,
+        webProxyServer: String,
+        webProxySecret: String,
+    ) {
         nativeRunning.set(true)
         nativeInitializing.set(false)
         serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -261,19 +318,33 @@ class ProxyService : Service() {
         ProxyServiceStatus.startTime = startTime
         ProxyServiceStatus.lastPing = lastPing
         AppDiagnostics.setProcessState(this, "proxy=starting")
-        ProxyLogger.i("Starting Rust/Tokio proxy core")
+        ProxyLogger.i(if (webProxyEnabled) "Starting Telegram Web Proxy (tproxy-v1) engine" else "Starting Rust/Tokio proxy core")
         lastSecret = secret
         lastCfDomain = cfDomain
         lastCfEnabled = cfEnabled
         lastPoolSize = poolSize
         lastDcIps = dcIps
+        lastWebProxyEnabled = webProxyEnabled
+        lastWebProxyServer = webProxyServer
+        lastWebProxySecret = webProxySecret
         acquireWakeLock()
 
         Thread({
             try {
-                val result = synchronized(nativeCallLock) { configureAndStartNative(secret, cfDomain, cfEnabled, poolSize, dcIps) }
+                val result = synchronized(nativeCallLock) {
+                    configureAndStartNative(
+                        secret,
+                        cfDomain,
+                        cfEnabled,
+                        poolSize,
+                        dcIps,
+                        webProxyEnabled,
+                        webProxyServer,
+                        webProxySecret,
+                    )
+                }
                 if (result != 0) {
-                    ProxyLogger.e("Rust core failed to start: code $result")
+                    ProxyLogger.e("Proxy core failed to start: code $result")
                     nativeRunning.set(false)
                     ProxyServiceStatus.isRunning = false
                     ProxyServiceStatus.isStarting = false
@@ -283,11 +354,11 @@ class ProxyService : Service() {
                     ProxyServiceStatus.isRunning = true
                     ProxyServiceStatus.isStarting = false
                     ProxyTileService.requestTileUpdate(this@ProxyService)
-                    ProxyLogger.i("Rust core started on ${ProxyConfig.HOST}:${ProxyConfig.PORT}")
+                    ProxyLogger.i("Proxy core started on ${ProxyConfig.HOST}:${ProxyConfig.PORT}")
                     AppDiagnostics.setProcessState(this, "proxy=running")
                 }
             } catch (t: Throwable) {
-                ProxyLogger.e("Rust core startup crashed", t)
+                ProxyLogger.e("Proxy core startup crashed", t)
                 nativeRunning.set(false)
                 ProxyServiceStatus.isRunning = false
                 ProxyServiceStatus.isStarting = false
@@ -303,13 +374,38 @@ class ProxyService : Service() {
         startStatsUpdater()
     }
 
-    private fun configureAndStartNative(secret: String, cfDomain: String, cfEnabled: Boolean, poolSize: Int, dcIps: String): Int {
+    private fun configureAndStartNative(
+        secret: String,
+        cfDomain: String,
+        cfEnabled: Boolean,
+        poolSize: Int,
+        dcIps: String,
+        webProxyEnabled: Boolean,
+        webProxyServer: String,
+        webProxySecret: String,
+    ): Int {
+        if (webProxyEnabled) {
+            val endpoint = WebProxyProtocol.parseEndpointInput(
+                serverInput = webProxyServer,
+                secretInput = webProxySecret.ifBlank { secret },
+            )
+            if (endpoint == null) {
+                ProxyLogger.e("Invalid Web Proxy server or secret configuration")
+                return -2
+            }
+            return WebProxyEngine.start(
+                bindHost = ProxyConfig.HOST,
+                bindPort = ProxyConfig.PORT,
+                endpoint = endpoint,
+            )
+        }
+
+        WebProxyEngine.stop()
         NativeProxy.setPoolSize(poolSize)
         NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
         NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = true, userDomain = cfDomain)
-        val bindHost = if (allowLan) "0.0.0.0" else ProxyConfig.HOST
         return NativeProxy.startProxy(
-            host = bindHost,
+            host = ProxyConfig.HOST,
             port = ProxyConfig.PORT,
             dcIps = ProxyConfig.dcMappingsForNative(dcIps),
             secret = secret,
@@ -336,9 +432,22 @@ class ProxyService : Service() {
                 for (attempt in 0 until CORE_RESTART_ATTEMPTS) {
                     result = runCatching {
                         synchronized(nativeCallLock) {
-                            NativeProxy.stopProxy()
+                            if (lastWebProxyEnabled) {
+                                WebProxyEngine.stop()
+                            } else {
+                                NativeProxy.stopProxy()
+                            }
                             if (!nativeRunning.get() || destroyed.get()) return@synchronized -1
-                            configureAndStartNative(lastSecret, lastCfDomain, lastCfEnabled, lastPoolSize, lastDcIps)
+                            configureAndStartNative(
+                                lastSecret,
+                                lastCfDomain,
+                                lastCfEnabled,
+                                lastPoolSize,
+                                lastDcIps,
+                                lastWebProxyEnabled,
+                                lastWebProxyServer,
+                                lastWebProxySecret,
+                            )
                         }
                     }.getOrElse {
                         ProxyLogger.e("Proxy recovery attempt ${attempt + 1} failed", it)
@@ -407,7 +516,13 @@ class ProxyService : Service() {
                 lastPing = if (online) 0 else -1
                 ProxyServiceStatus.lastPing = lastPing
                 val stats = runCatching {
-                    synchronized(nativeCallLock) { NativeProxy.getStats().orEmpty() }
+                    synchronized(nativeCallLock) {
+                        if (lastWebProxyEnabled) {
+                            WebProxyEngine.getStats()
+                        } else {
+                            NativeProxy.getStats().orEmpty()
+                        }
+                    }
                 }.getOrDefault("")
                 if (stats.isNotBlank()) {
                     ProxyLogger.d("Rust stats: $stats")
@@ -427,13 +542,16 @@ class ProxyService : Service() {
 
     private fun stopNativeProxy() {
         if (!nativeRunning.getAndSet(false)) return
-        ProxyLogger.i("Stopping Rust/Tokio proxy core")
+        ProxyLogger.i("Stopping proxy core")
         val completed = CompletableDeferred<Unit>()
         Thread({
             try {
-                synchronized(nativeCallLock) { NativeProxy.stopProxy() }
+                synchronized(nativeCallLock) {
+                    WebProxyEngine.stop()
+                    NativeProxy.stopProxy()
+                }
             } catch (t: Throwable) {
-                ProxyLogger.w("Rust core stop failed", t)
+                ProxyLogger.w("Proxy core stop failed", t)
             } finally {
                 completed.complete(Unit)
             }
@@ -443,7 +561,7 @@ class ProxyService : Service() {
         }
         serviceScope.launch {
             withTimeoutOrNull(3000) { completed.await() }
-            ProxyLogger.i("Rust core stopped")
+            ProxyLogger.i("Proxy core stopped")
         }
     }
 
@@ -474,7 +592,9 @@ class ProxyService : Service() {
 
         if (routeFailureDelta > 0) {
             val nativeReason = runCatching {
-                synchronized(nativeCallLock) { NativeProxy.getLastError().orEmpty() }
+                synchronized(nativeCallLock) {
+                    if (lastWebProxyEnabled) WebProxyEngine.getLastError() else NativeProxy.getLastError().orEmpty()
+                }
             }.getOrDefault("")
             ProxyLogger.e(
                 "Telegram transport failed +$routeFailureDelta" +
@@ -485,7 +605,7 @@ class ProxyService : Service() {
             degradedStatsCycles = 0
         } else if (active >= 3 && wsAttemptDelta > 0) {
             degradedStatsCycles++
-            ProxyLogger.w("Direct WS unavailable (+$wsAttemptDelta attempts); waiting for CF/TCP fallback")
+            ProxyLogger.w("Direct WS unavailable (+$wsAttemptDelta attempts); waiting for fallback")
         }
 
         lastRouteFailures = routeFailures
@@ -494,7 +614,7 @@ class ProxyService : Service() {
 
         if (degradedStatsCycles >= DEGRADED_STATS_CYCLES_BEFORE_RESTART) {
             degradedStatsCycles = 0
-            scheduleCoreRestart("Rust stats indicate degraded Telegram transport")
+            scheduleCoreRestart("Transport stats indicate degraded Telegram connection")
         }
     }
 
@@ -577,9 +697,10 @@ class ProxyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val uptime = formatUptime(System.currentTimeMillis() - startTime)
+        val title = if (lastWebProxyEnabled) "TG Web Proxy active" else "TG WS Proxy active"
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("TG WS Proxy active")
+            .setContentTitle(title)
             .setContentText("${ProxyConfig.HOST}:${ProxyConfig.PORT} | $uptime | $content")
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
@@ -607,14 +728,15 @@ class ProxyService : Service() {
     companion object {
         const val ACTION_STOP = "com.tgwsproxy.android.STOP"
         const val EXTRA_SECRET = "secret"
-        const val EXTRA_FAKE_TLS_DOMAIN = "fake_tls_domain"
         const val EXTRA_CF_WORKER_DOMAIN = "cf_worker_domain"
         const val EXTRA_CF_DOMAIN = "cf_domain"
         const val EXTRA_CF_ENABLED = "cf_enabled"
         const val EXTRA_POOL_SIZE = "pool_size"
         const val EXTRA_DC_IPS = "dc_ips"
-        const val EXTRA_ALLOW_LAN = "allow_lan"
         const val EXTRA_SMART_STANDBY = "smart_standby"
+        const val EXTRA_WEB_PROXY_ENABLED = "web_proxy_enabled"
+        const val EXTRA_WEB_PROXY_SERVER = "web_proxy_server"
+        const val EXTRA_WEB_PROXY_SECRET = "web_proxy_secret"
         private const val PREFS = "proxy"
         private const val CHANNEL_ID = "proxy"
         private const val NOTIFICATION_ID = 1001

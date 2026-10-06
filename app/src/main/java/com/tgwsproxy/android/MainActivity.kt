@@ -101,9 +101,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
-import androidx.compose.foundation.Canvas
-import com.tgwsproxy.android.benchmark.DomainBenchmark
-import com.tgwsproxy.android.benchmark.DomainPingResult
 import com.tgwsproxy.android.AppChannel
 import com.tgwsproxy.android.ReleaseArchiveItem
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -119,8 +116,8 @@ import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
 import com.tgwsproxy.android.traffic.TrafficSummary
 import com.tgwsproxy.android.ui.theme.*
-import com.tgwsproxy.android.util.NetworkUtils
-import com.tgwsproxy.android.util.QrGenerator
+import com.tgwsproxy.android.webproxy.WebProxyEngine
+import com.tgwsproxy.android.webproxy.WebProxyProtocol
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -138,6 +135,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         requestNotificationPermission()
         requestStoragePermission()
+        intent?.dataString?.let { dataUrl ->
+            WebProxyProtocol.parseWebProxyLink(dataUrl)?.let { endpoint ->
+                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
+                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, endpoint.serverField)
+                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, endpoint.mtprotoSecretHex)
+                Toast.makeText(this, "Web Proxy: ${endpoint.serverField}", Toast.LENGTH_SHORT).show()
+            }
+        }
         setContent {
             val context = LocalContext.current
             var themeMode by rememberSaveable {
@@ -415,7 +420,6 @@ private fun ProxyScreen(
     var proxyStatus by remember { mutableStateOf(ProxyStatus()) }
     var logLines by remember { mutableStateOf(emptyList<String>()) }
     var secret by remember { mutableStateOf("") }
-    var fakeTlsDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, "")) }
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
     var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, true)) }
     var dcMappings by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_DC_IPS, "")) }
@@ -424,6 +428,9 @@ private fun ProxyScreen(
             context.getProxyPref(ProxyService.EXTRA_POOL_SIZE, "4").toIntOrNull()?.takeIf { it in listOf(2, 4, 6) } ?: 4,
         )
     }
+    var webProxyEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, false)) }
+    var webProxyServer by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, "")) }
+    var webProxySecret by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, "")) }
     var updateMessage by remember(language) { mutableStateOf("${text.currentVersion}: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -439,7 +446,6 @@ private fun ProxyScreen(
         )
     }
     var autoStartProxy by rememberSaveable { mutableStateOf(context.getProxyPref(AUTO_START_PROXY_PREF, false)) }
-    var allowLan by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_ALLOW_LAN, false)) }
     var smartStandby by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_SMART_STANDBY, true)) }
     var appChannel by rememberSaveable {
         mutableStateOf(
@@ -492,7 +498,6 @@ private fun ProxyScreen(
     var isArchiveLoading by remember { mutableStateOf(false) }
     var rollbackConfirmRelease by remember { mutableStateOf<ReleaseArchiveItem?>(null) }
     var isRollbackDownloading by remember { mutableStateOf(false) }
-    var showQrDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var trafficSummary by remember { mutableStateOf(TrafficStatsManager.getSummary(context)) }
@@ -501,7 +506,9 @@ private fun ProxyScreen(
     var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
     var showSplash by rememberSaveable { mutableStateOf(true) }
     var batteryUnrestricted by remember { mutableStateOf(context.isIgnoringBatteryOptimizations()) }
-    val link = remember(secret, fakeTlsDomain) { ProxyConfig.telegramProxyLink(secret, ProxyConfig.normalizeDomain(fakeTlsDomain)) }
+    val link = remember(secret, webProxyEnabled, webProxyServer, webProxySecret) {
+        ProxyConfig.telegramProxyLinkForMode(secret, webProxyEnabled, webProxyServer, webProxySecret)
+    }
 
     fun runUpdateCheck(manual: Boolean) {
         if (updateBusy) return
@@ -734,16 +741,6 @@ private fun ProxyScreen(
         )
     }
 
-    if (showQrDialog) {
-        val localIp = NetworkUtils.getLocalIpAddress(context)
-        val lanLink = if (localIp != null) {
-            val cleanDomain = fakeTlsDomain.trim()
-            val proxySecret = if (cleanDomain.isBlank()) "dd$secret" else "ee$secret${cleanDomain.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }}"
-            "tg://proxy?server=$localIp&port=${ProxyConfig.PORT}&secret=$proxySecret"
-        } else link
-        QrDialog(link = lanLink, onDismiss = { showQrDialog = false })
-    }
-
     if (showExportDialog) {
         val profile = ProxyProfile(
             id = "custom",
@@ -751,12 +748,14 @@ private fun ProxyScreen(
             enName = "Custom",
             ruDesc = "",
             enDesc = "",
-            fakeTlsDomain = fakeTlsDomain,
             cfWorkerDomain = cfWorkerDomain,
             cfEnabled = cfEnabled,
             poolSize = poolSize,
             smartStandby = smartStandby,
             dcMappings = dcMappings,
+            webProxyEnabled = webProxyEnabled,
+            webProxyServer = webProxyServer,
+            webProxySecret = webProxySecret,
         )
         ExportConfigDialog(language = language, jsonText = profile.exportToJson(secret), onDismiss = { showExportDialog = false })
     }
@@ -767,17 +766,21 @@ private fun ProxyScreen(
             onDismiss = { showImportDialog = false },
             onImport = { cfg ->
                 if (cfg.secret != null) secret = cfg.secret
-                fakeTlsDomain = cfg.fakeTlsDomain
                 cfWorkerDomain = cfg.cfWorkerDomain
                 cfEnabled = cfg.cfEnabled
                 poolSize = cfg.poolSize
                 smartStandby = cfg.smartStandby
+                webProxyEnabled = cfg.webProxyEnabled
+                if (cfg.webProxyServer.isNotBlank()) webProxyServer = cfg.webProxyServer
+                if (cfg.webProxySecret.isNotBlank()) webProxySecret = cfg.webProxySecret
                 if (cfg.dcMappings.isNotBlank()) dcMappings = cfg.dcMappings
-                context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
                 context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
                 context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
                 context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
                 context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
+                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
+                if (cfg.webProxyServer.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                if (cfg.webProxySecret.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
                 if (cfg.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
                 Toast.makeText(context, if (language == AppLanguage.Ru) "Настройки импортированы" else "Settings imported", Toast.LENGTH_SHORT).show()
             },
@@ -910,9 +913,42 @@ private fun ProxyScreen(
                         cfEnabled = cfEnabled,
                         language = language,
                         trafficSummary = trafficSummary,
-                        allowLan = allowLan,
                         secret = secret,
-                        fakeTlsDomain = fakeTlsDomain,
+                        webProxyEnabled = webProxyEnabled,
+                        webProxyServer = webProxyServer,
+                        webProxySecret = webProxySecret,
+                        onWebProxyEnabledChange = {
+                            webProxyEnabled = it
+                            context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, it)
+                        },
+                        onWebProxyServerChange = { input ->
+                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
+                            if (parsedLink != null) {
+                                webProxyServer = parsedLink.serverField
+                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxyEnabled = true
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
+                            } else {
+                                webProxyServer = input.trim()
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                            }
+                        },
+                        onWebProxySecretChange = { input ->
+                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
+                            if (parsedLink != null) {
+                                webProxyServer = parsedLink.serverField
+                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxyEnabled = true
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
+                            } else {
+                                webProxySecret = input.trim()
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                            }
+                        },
                         serviceMode = serviceMode,
                         isVpnActive = isVpnActive,
                         detectedAppsCount = detectedApps.size,
@@ -925,17 +961,32 @@ private fun ProxyScreen(
                             TrafficStatsManager.resetStats(context)
                             trafficSummary = TrafficStatsManager.getSummary(context)
                         },
-                        onShowQr = { showQrDialog = true },
                         onStart = {
                             if (!ProxyConfig.isValidDcMappings(dcMappings)) {
                                 Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
+                            } else if (webProxyEnabled && WebProxyProtocol.parseEndpointInput(webProxyServer, webProxySecret.ifBlank { secret }) == null) {
+                                Toast.makeText(
+                                    context,
+                                    if (language == AppLanguage.Ru) "Укажите корректный сервер и секрет Web Proxy" else "Enter a valid Web Proxy server and secret",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             } else {
-                                context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings, allowLan, smartStandby)
+                                context.startProxyService(
+                                    secret = secret,
+                                    cfWorkerDomain = cfWorkerDomain,
+                                    cfEnabled = cfEnabled,
+                                    poolSize = poolSize,
+                                    dcMappings = dcMappings,
+                                    smartStandby = smartStandby,
+                                    webProxyEnabled = webProxyEnabled,
+                                    webProxyServer = webProxyServer,
+                                    webProxySecret = webProxySecret,
+                                )
                                 if (serviceMode == ServiceOperationMode.VpnTunnel && !isVpnActive) {
                                     toggleVpnTunnel()
                                 }
+                                proxyStatus = ProxyStatus(isStarting = true)
                             }
-                            proxyStatus = ProxyStatus(isStarting = true)
                         },
                         onStop = {
                             context.stopService(Intent(context, ProxyService::class.java))
@@ -983,11 +1034,6 @@ private fun ProxyScreen(
                             language = it
                             context.saveProxyPref(LANGUAGE_PREF, it.code)
                         },
-                        fakeTlsDomain = fakeTlsDomain,
-                        onFakeTlsDomainChange = {
-                            fakeTlsDomain = it.trim()
-                            context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
-                        },
                         cfWorkerDomain = cfWorkerDomain,
                         onCfWorkerDomainChange = {
                             cfWorkerDomain = ProxyConfig.cleanDomain(it)
@@ -1004,15 +1050,45 @@ private fun ProxyScreen(
                             cfEnabled = it
                             context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, it)
                         },
-                        allowLan = allowLan,
-                        onAllowLanChange = {
-                            allowLan = it
-                            context.saveProxyPref(ProxyService.EXTRA_ALLOW_LAN, it)
-                        },
                         smartStandby = smartStandby,
                         onSmartStandbyChange = {
                             smartStandby = it
                             context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, it)
+                        },
+                        webProxyEnabled = webProxyEnabled,
+                        webProxyServer = webProxyServer,
+                        webProxySecret = webProxySecret,
+                        onWebProxyEnabledChange = {
+                            webProxyEnabled = it
+                            context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, it)
+                        },
+                        onWebProxyServerChange = { input ->
+                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
+                            if (parsedLink != null) {
+                                webProxyServer = parsedLink.serverField
+                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxyEnabled = true
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
+                            } else {
+                                webProxyServer = input.trim()
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                            }
+                        },
+                        onWebProxySecretChange = { input ->
+                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
+                            if (parsedLink != null) {
+                                webProxyServer = parsedLink.serverField
+                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxyEnabled = true
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
+                            } else {
+                                webProxySecret = input.trim()
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                            }
                         },
                         appChannel = appChannel,
                         onChannelChange = { newChannel ->
@@ -1029,20 +1105,28 @@ private fun ProxyScreen(
                             loadReleaseArchive()
                         },
                         onApplyProfile = { profile ->
-                            fakeTlsDomain = profile.fakeTlsDomain
                             cfWorkerDomain = profile.cfWorkerDomain
                             cfEnabled = profile.cfEnabled
                             poolSize = profile.poolSize
                             smartStandby = profile.smartStandby
                             if (profile.dcMappings.isNotBlank()) dcMappings = profile.dcMappings
-                            context.saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, fakeTlsDomain)
                             context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
                             context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
                             context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
                             context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
                             if (profile.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
                             if (proxyStatus.isRunning) {
-                                context.startProxyService(secret, fakeTlsDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings, allowLan, smartStandby)
+                                context.startProxyService(
+                                    secret = secret,
+                                    cfWorkerDomain = cfWorkerDomain,
+                                    cfEnabled = cfEnabled,
+                                    poolSize = poolSize,
+                                    dcMappings = dcMappings,
+                                    smartStandby = smartStandby,
+                                    webProxyEnabled = webProxyEnabled,
+                                    webProxyServer = webProxyServer,
+                                    webProxySecret = webProxySecret,
+                                )
                                 Toast.makeText(context, if (language == AppLanguage.Ru) "Профиль ${profile.name(true)} применен (прокси перезапущен)" else "Applied profile ${profile.name(false)} (proxy reloaded)", Toast.LENGTH_SHORT).show()
                             } else {
                                 Toast.makeText(context, if (language == AppLanguage.Ru) "Применен профиль: ${profile.name(true)}" else "Applied profile: ${profile.name(false)}", Toast.LENGTH_SHORT).show()
@@ -1128,23 +1212,31 @@ private fun HomePage(
     cfEnabled: Boolean,
     language: AppLanguage,
     trafficSummary: TrafficSummary,
-    allowLan: Boolean,
-    secret: String,
-    fakeTlsDomain: String,
+    webProxyEnabled: Boolean,
+    webProxyServer: String,
+    webProxySecret: String,
+    onWebProxyEnabledChange: (Boolean) -> Unit,
+    onWebProxyServerChange: (String) -> Unit,
+    onWebProxySecretChange: (String) -> Unit,
+    onPasteWebProxyLink: (String) -> Unit,
     serviceMode: ServiceOperationMode,
     isVpnActive: Boolean,
     detectedAppsCount: Int,
     onToggleMode: (ServiceOperationMode) -> Unit,
     onToggleVpn: () -> Unit,
     onResetTraffic: () -> Unit,
-    onShowQr: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onCopyLink: () -> Unit,
     onOpenTelegram: () -> Unit,
 ) {
     val stats = remember(logs) { latestStats(logs) }
-    PageTitle(if (text.start == "Запустить") "Главная" else "Home", if (serviceMode == ServiceOperationMode.VpnTunnel) "Туннель со звонками (VPN)" else "127.0.0.1:1443 · MTProto WS Proxy")
+    val subtitle = when {
+        serviceMode == ServiceOperationMode.VpnTunnel -> "Туннель со звонками (VPN)"
+        webProxyEnabled -> "127.0.0.1:1443 · Telegram Web Proxy (tproxy-v1)"
+        else -> "127.0.0.1:1443 · MTProto WS Proxy"
+    }
+    PageTitle(if (text.start == "Запустить") "Главная" else "Home", subtitle)
     VpnModeCard(
         language = language,
         mode = serviceMode,
@@ -1159,23 +1251,41 @@ private fun HomePage(
         link = link,
         stats = stats,
         cfEnabled = cfEnabled,
+        webProxyEnabled = webProxyEnabled,
         onStart = onStart,
         onStop = onStop,
         onOpenTelegram = onOpenTelegram,
         onCopyLink = onCopyLink,
     )
-    TrafficStatsCard(language, trafficSummary, onResetTraffic)
-    LanSharingCard(
+    WebProxyCard(
         language = language,
-        allowLan = allowLan,
-        isRunning = status.isRunning,
-        secret = secret,
-        fakeTlsDomain = fakeTlsDomain,
-        onShowQr = onShowQr,
+        enabled = !status.isStarting,
+        webProxyEnabled = webProxyEnabled,
+        webProxyServer = webProxyServer,
+        webProxySecret = webProxySecret,
+        onWebProxyEnabledChange = onWebProxyEnabledChange,
+        onWebProxyServerChange = onWebProxyServerChange,
+        onWebProxySecretChange = onWebProxySecretChange,
+        onPasteWebProxyLink = onPasteWebProxyLink,
     )
+    TrafficStatsCard(language, trafficSummary, onResetTraffic)
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        StatTile(if (text.start == "Запустить") "Пул WebSocket" else "WS Pool", "${stats.ws} active", Modifier.weight(1f))
-        StatTile(if (text.start == "Запустить") "Cloudflare" else "Cloudflare", if (cfEnabled) "Priority" else "Off", Modifier.weight(1f), color = if (cfEnabled) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant)
+        StatTile(
+            if (webProxyEnabled) (if (text.start == "Запустить") "Туннель tproxy-v1" else "tproxy-v1")
+            else (if (text.start == "Запустить") "Пул WebSocket" else "WS Pool"),
+            "${stats.ws} active",
+            Modifier.weight(1f),
+        )
+        StatTile(
+            if (webProxyEnabled) "Web Proxy" else "Cloudflare",
+            when {
+                webProxyEnabled -> "Active"
+                cfEnabled -> "Priority"
+                else -> "Off"
+            },
+            Modifier.weight(1f),
+            color = if (webProxyEnabled || cfEnabled) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile(if (text.start == "Запустить") "Сессии" else "Active", stats.active, Modifier.weight(1f))
@@ -1221,8 +1331,13 @@ private fun SettingsPage(
     appChannel: AppChannel,
     onChannelChange: (AppChannel) -> Unit,
     onOpenVersionArchive: () -> Unit,
-    fakeTlsDomain: String,
-    onFakeTlsDomainChange: (String) -> Unit,
+    webProxyEnabled: Boolean,
+    webProxyServer: String,
+    webProxySecret: String,
+    onWebProxyEnabledChange: (Boolean) -> Unit,
+    onWebProxyServerChange: (String) -> Unit,
+    onWebProxySecretChange: (String) -> Unit,
+    onPasteWebProxyLink: (String) -> Unit,
     cfWorkerDomain: String,
     onCfWorkerDomainChange: (String) -> Unit,
     dcMappings: String,
@@ -1230,8 +1345,6 @@ private fun SettingsPage(
     enabled: Boolean,
     cfEnabled: Boolean,
     onCfEnabledChange: (Boolean) -> Unit,
-    allowLan: Boolean,
-    onAllowLanChange: (Boolean) -> Unit,
     smartStandby: Boolean,
     onSmartStandbyChange: (Boolean) -> Unit,
     onApplyProfile: (ProxyProfile) -> Unit,
@@ -1273,10 +1386,19 @@ private fun SettingsPage(
         onOpenExport = onOpenExport,
         onOpenImport = onOpenImport,
     )
+    WebProxyCard(
+        language = language,
+        enabled = enabled,
+        webProxyEnabled = webProxyEnabled,
+        webProxyServer = webProxyServer,
+        webProxySecret = webProxySecret,
+        onWebProxyEnabledChange = onWebProxyEnabledChange,
+        onWebProxyServerChange = onWebProxyServerChange,
+        onWebProxySecretChange = onWebProxySecretChange,
+        onPasteWebProxyLink = onPasteWebProxyLink,
+    )
     SettingsCard(
         text = text,
-        fakeTlsDomain = fakeTlsDomain,
-        onFakeTlsDomainChange = onFakeTlsDomainChange,
         cfWorkerDomain = cfWorkerDomain,
         onCfWorkerDomainChange = onCfWorkerDomainChange,
         dcMappings = dcMappings,
@@ -1286,22 +1408,6 @@ private fun SettingsPage(
         onCfEnabledChange = onCfEnabledChange,
         secret = secret,
         onCopySecret = onCopySecret,
-    )
-    DomainBenchmarkCard(
-        language = language,
-        currentDomain = fakeTlsDomain,
-        onSelectDomain = { newDomain ->
-            onFakeTlsDomainChange(newDomain)
-            if (enabled) {
-                context.startProxyService(secret, newDomain, cfWorkerDomain, cfEnabled, poolSize, dcMappings, allowLan, smartStandby)
-                Toast.makeText(context, if (language == AppLanguage.Ru) "Применен домен: $newDomain (прокси перезапущен)" else "Applied domain: $newDomain (proxy reloaded)", Toast.LENGTH_SHORT).show()
-            }
-        },
-    )
-    LanSettingsCard(
-        language = language,
-        allowLan = allowLan,
-        onAllowLanChange = onAllowLanChange,
     )
     SmartStandbyCard(
         language = language,
@@ -1332,22 +1438,32 @@ private fun SettingsPage(
 }
 
 @Composable
-private fun DomainBenchmarkCard(
+private fun WebProxyCard(
     language: AppLanguage,
-    currentDomain: String,
-    onSelectDomain: (String) -> Unit,
+    enabled: Boolean,
+    webProxyEnabled: Boolean,
+    webProxyServer: String,
+    webProxySecret: String,
+    onWebProxyEnabledChange: (Boolean) -> Unit,
+    onWebProxyServerChange: (String) -> Unit,
+    onWebProxySecretChange: (String) -> Unit,
+    onPasteWebProxyLink: (String) -> Unit,
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    var isTesting by remember { mutableStateOf(false) }
-    var results by remember { mutableStateOf<List<DomainPingResult>>(emptyList()) }
     val isRu = language == AppLanguage.Ru
+    val parsedEndpoint = remember(webProxyServer, webProxySecret) {
+        WebProxyProtocol.parseEndpointInput(webProxyServer, webProxySecret)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+        border = BorderStroke(
+            1.dp,
+            if (webProxyEnabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+        ),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
@@ -1356,131 +1472,146 @@ private fun DomainBenchmarkCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Telegram Web Proxy",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                "tproxy-v1",
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                    }
                     Text(
-                        if (isRu) "Тест задержки доменов" else "Domain Latency Test",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        if (isRu) "Поиск лучшего маршрута FakeTLS / Cloudflare" else "Find best FakeTLS / Cloudflare route",
+                        if (isRu) {
+                            "Новый протокол маскировки под обычный HTTPS-сайт (t.me/webproxy). Работает со всеми клиентами Telegram через локальный мост 127.0.0.1:1443."
+                        } else {
+                            "New HTTPS website disguise protocol (t.me/webproxy). Works with all Telegram clients via local 127.0.0.1:1443 bridge."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Button(
+                Switch(
+                    checked = webProxyEnabled,
+                    enabled = enabled,
+                    onCheckedChange = onWebProxyEnabledChange,
+                )
+            }
+
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = webProxyServer,
+                onValueChange = { input ->
+                    if (input.contains("webproxy", ignoreCase = true) && input.contains("secret=", ignoreCase = true)) {
+                        onPasteWebProxyLink(input)
+                    } else {
+                        onWebProxyServerChange(input)
+                    }
+                },
+                enabled = enabled,
+                singleLine = true,
+                label = { Text(if (isRu) "Сервер Web Proxy (или ссылка t.me/webproxy)" else "Web Proxy Server (or t.me/webproxy link)") },
+                placeholder = { Text("example.com/portal", fontFamily = FontFamily.Monospace) },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+            )
+
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = webProxySecret,
+                onValueChange = { input ->
+                    if (input.contains("webproxy", ignoreCase = true) && input.contains("server=", ignoreCase = true)) {
+                        onPasteWebProxyLink(input)
+                    } else {
+                        onWebProxySecretChange(input)
+                    }
+                },
+                enabled = enabled,
+                singleLine = true,
+                label = { Text(if (isRu) "Секрет Web Proxy (p... / hex / base64)" else "Web Proxy Secret (p... / hex / base64)") },
+                placeholder = { Text("pAIBAwQFBgcICQoLDA0ODxAREhM", fontFamily = FontFamily.Monospace) },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+            )
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = enabled,
                     onClick = {
-                        if (!isTesting) {
-                            isTesting = true
-                            coroutineScope.launch {
-                                results = DomainBenchmark.runBenchmark(currentDomain, isRu)
-                                isTesting = false
-                            }
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                        if (clipText.isNotBlank()) {
+                            onPasteWebProxyLink(clipText)
+                        } else {
+                            Toast.makeText(
+                                context,
+                                if (isRu) "Буфер обмена пуст" else "Clipboard is empty",
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         }
                     },
-                    enabled = !isTesting,
                 ) {
-                    ButtonText(if (isTesting) (if (isRu) "Тест..." else "Testing...") else (if (isRu) "Проверить" else "Check ping"))
+                    ButtonText(if (isRu) "📋 Вставить ссылку" else "📋 Paste Link")
+                }
+
+                if (parsedEndpoint != null) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            context.copyToClipboard(parsedEndpoint.toHttpsShareUrl())
+                            Toast.makeText(
+                                context,
+                                if (isRu) "Ссылка t.me/webproxy скопирована" else "t.me/webproxy link copied",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
+                    ) {
+                        ButtonText(if (isRu) "🔗 Копировать t.me/webproxy" else "🔗 Copy t.me/webproxy")
+                    }
                 }
             }
 
-            if (results.isNotEmpty()) {
-                val fastest = results.firstOrNull { it.isSuccess }
-                if (fastest != null) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f))
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            if (isRu) "Лучший: ${fastest.domain} (${fastest.pingMs} ms)" else "Fastest: ${fastest.domain} (${fastest.pingMs} ms)",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        OutlinedButton(
-                            onClick = {
-                                onSelectDomain(fastest.domain)
-                                Toast.makeText(context, if (isRu) "Применен домен: ${fastest.domain}" else "Applied domain: ${fastest.domain}", Toast.LENGTH_SHORT).show()
-                            },
-                        ) {
-                            ButtonText(if (isRu) "Применить" else "Apply")
-                        }
-                    }
-                }
-
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    results.forEach { result ->
-                        val isCurrent = result.domain.equals(currentDomain, ignoreCase = true)
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (isCurrent) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
-                            ),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                                    Text(
-                                        result.domain,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                    if (result.description.isNotBlank()) {
-                                        Text(
-                                            result.description,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        if (result.isSuccess) "${result.pingMs} ms" else (if (isRu) "Таймаут" else "Timeout"),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold,
-                                        color = when {
-                                            !result.isSuccess -> MaterialTheme.colorScheme.error
-                                            result.pingMs < 100 -> SignalMint
-                                            result.pingMs < 250 -> SignalAmber
-                                            else -> MaterialTheme.colorScheme.error
-                                        },
-                                    )
-                                    if (!isCurrent) {
-                                        TextButton(
-                                            onClick = {
-                                                onSelectDomain(result.domain)
-                                                Toast.makeText(context, if (isRu) "Выбран: ${result.domain}" else "Selected: ${result.domain}", Toast.LENGTH_SHORT).show()
-                                            },
-                                        ) {
-                                            Text(if (isRu) "Выбрать" else "Select")
-                                        }
-                                    } else {
-                                        Text(
-                                            if (isRu) "Активен ✓" else "Active ✓",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold,
-                                        )
-                                    }
-                                }
+            if (webProxyEnabled) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (parsedEndpoint != null) {
+                        SignalMint.copy(alpha = 0.14f)
+                    } else {
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                    },
+                ) {
+                    Text(
+                        when {
+                            parsedEndpoint != null -> if (isRu) {
+                                "✓ Настроен: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
+                            } else {
+                                "✓ Ready: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
                             }
-                        }
-                    }
+                            else -> if (isRu) {
+                                "Укажите корректный сервер и секрет Web Proxy или вставьте ссылку https://t.me/webproxy?..."
+                            } else {
+                                "Enter a valid Web Proxy server and secret or paste a https://t.me/webproxy?... link"
+                            }
+                        },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (parsedEndpoint != null) SignalMint else MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
@@ -1544,78 +1675,6 @@ private fun TrafficStatsCard(
 }
 
 @Composable
-private fun LanSharingCard(
-    language: AppLanguage,
-    allowLan: Boolean,
-    isRunning: Boolean,
-    secret: String,
-    fakeTlsDomain: String,
-    onShowQr: () -> Unit,
-) {
-    val context = LocalContext.current
-    val isRu = language == AppLanguage.Ru
-    val localIp = remember(allowLan, isRunning) { NetworkUtils.getLocalIpAddress(context) }
-    val lanLink = remember(localIp, secret, fakeTlsDomain) {
-        if (localIp != null) {
-            val cleanDomain = fakeTlsDomain.trim()
-            val proxySecret = if (cleanDomain.isBlank()) "dd$secret" else "ee$secret${cleanDomain.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }}"
-            "tg://proxy?server=$localIp&port=${ProxyConfig.PORT}&secret=$proxySecret"
-        } else ""
-    }
-
-    if (!allowLan) return
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        if (isRu) "Раздача в сети Wi-Fi" else "Local Wi-Fi Sharing",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        if (localIp != null) "IP: $localIp:${ProxyConfig.PORT}" else (if (isRu) "Wi-Fi не подключен" else "Wi-Fi not connected"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (localIp != null) SignalMint else MaterialTheme.colorScheme.error,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-
-            if (localIp != null && isRunning) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        modifier = Modifier.weight(1f),
-                        onClick = onShowQr,
-                    ) {
-                        ButtonText(if (isRu) "Показать QR" else "Show QR")
-                    }
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            context.copyToClipboard(lanLink)
-                            Toast.makeText(context, if (isRu) "Ссылка для ПК скопирована" else "PC link copied", Toast.LENGTH_SHORT).show()
-                        },
-                    ) {
-                        ButtonText(if (isRu) "Копировать для ПК" else "Copy PC link")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun PresetsAndBackupCard(
     language: AppLanguage,
     enabled: Boolean,
@@ -1646,7 +1705,7 @@ private fun PresetsAndBackupCard(
                         Text(
                             when (profile.id) {
                                 "fast_cf" -> if (isRu) "🚀 Скорость" else "🚀 Speed"
-                                "stealth_faketls" -> if (isRu) "🛡️ Скрытный" else "🛡️ Stealth"
+                                "direct_wss" -> if (isRu) "⚡ Прямой WSS" else "⚡ Direct WSS"
                                 else -> if (isRu) "🔋 Эко" else "🔋 Eco"
                             },
                             style = MaterialTheme.typography.labelSmall,
@@ -1710,104 +1769,6 @@ private fun SmartStandbyCard(
 }
 
 @Composable
-private fun LanSettingsCard(
-    language: AppLanguage,
-    allowLan: Boolean,
-    onAllowLanChange: (Boolean) -> Unit,
-) {
-    val isRu = language == AppLanguage.Ru
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    if (isRu) "Раздача по Wi-Fi (LAN Mode)" else "LAN Sharing (0.0.0.0)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    if (isRu) "Разрешить подключение ПК и других устройств в локальной сети" else "Allow PC and other local network devices to connect",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(checked = allowLan, onCheckedChange = onAllowLanChange)
-        }
-    }
-}
-
-@Composable
-private fun QrDialog(
-    link: String,
-    onDismiss: () -> Unit,
-) {
-    val context = LocalContext.current
-    val qrMatrix = remember(link) { runCatching { QrGenerator.encode(link) }.getOrNull() }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("QR-код для подключения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(
-                    "Отсканируйте камерой Telegram на компьютере или планшете",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (qrMatrix != null) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color.White,
-                        modifier = Modifier.size(220.dp).padding(8.dp),
-                    ) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val moduleSize = size.width / qrMatrix.size
-                            for (r in 0 until qrMatrix.size) {
-                                for (c in 0 until qrMatrix.size) {
-                                    if (qrMatrix.isDark(r, c)) {
-                                        drawRect(
-                                            color = Color.Black,
-                                            topLeft = Offset(c * moduleSize, r * moduleSize),
-                                            size = androidx.compose.ui.geometry.Size(moduleSize, moduleSize),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                context.copyToClipboard(link)
-                Toast.makeText(context, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
-                onDismiss()
-            }) {
-                Text("Скопировать ссылку")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Закрыть")
-            }
-        },
-    )
-}
-
-@Composable
 private fun ExportConfigDialog(
     language: AppLanguage,
     jsonText: String,
@@ -1860,12 +1821,15 @@ private fun ImportConfigDialog(
         title = { Text(if (isRu) "Импорт конфигурации" else "Import Configuration", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (isRu) "Вставьте JSON конфиг или ссылку tg://proxy:" else "Paste JSON config or tg://proxy link:")
+                Text(
+                    if (isRu) "Вставьте JSON конфиг или ссылку t.me/webproxy / tg://webproxy / tg://proxy:"
+                    else "Paste JSON config or t.me/webproxy / tg://webproxy / tg://proxy link:",
+                )
                 OutlinedTextField(
                     value = rawText,
                     onValueChange = { rawText = it; errorText = null },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("{ ... }") },
+                    placeholder = { Text("https://t.me/webproxy?server=...&secret=...") },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 )
                 if (errorText != null) {
@@ -1880,7 +1844,7 @@ private fun ImportConfigDialog(
                     onImport(parsed)
                     onDismiss()
                 } else {
-                    errorText = if (isRu) "Неверный формат конфигурации" else "Invalid configuration format"
+                    errorText = if (isRu) "Неверный формат конфигурации или ссылки" else "Invalid configuration or link format"
                 }
             }) {
                 Text(if (isRu) "Применить" else "Apply")
@@ -1992,16 +1956,28 @@ private fun SplashScreen(text: UiStrings) {
 @Composable
 private fun HelpPage(language: AppLanguage) {
     val ru = language == AppLanguage.Ru
-    PageTitle(if (ru) "Помощь" else "Help", "Rust + Tokio core")
+    PageTitle(if (ru) "Помощь" else "Help", "Rust + Tokio core · tproxy-v1")
+    HelpCategory(
+        title = if (ru) "Telegram Web Proxy (tproxy-v1)" else "Telegram Web Proxy (tproxy-v1)",
+        items = if (ru) listOf(
+            "Что это" to "Новый официальный протокол Telegram, маскирующий трафик под обычный HTTPS-сайт с валидным TLS-сертификатом (без уязвимостей FakeTLS).",
+            "Как подключить" to "Вставьте ссылку вида https://t.me/webproxy?server=...&secret=... или tg://webproxy?... в блок Web Proxy и включите тумблер.",
+            "Совместимость" to "Встроенный движок tproxy-v1 поднимает локальный мост 127.0.0.1:1443 (поддерживаются режимы https, https-lanes, websocket и websocket-lanes), поэтому Web Proxy работает во всех Android-клиентах Telegram.",
+        ) else listOf(
+            "What it is" to "Telegram's new official proxy protocol disguising traffic as a real HTTPS website with a valid TLS certificate (replacing legacy FakeTLS).",
+            "How to connect" to "Paste a https://t.me/webproxy?server=...&secret=... or tg://webproxy?... link into the Web Proxy card and enable the toggle.",
+            "Compatibility" to "The built-in tproxy-v1 engine bridges traffic via local 127.0.0.1:1443 (supporting https, https-lanes, websocket, and websocket-lanes modes) so it works in all Android Telegram clients.",
+        ),
+    )
     HelpCategory(
         title = if (ru) "Подключение" else "Connection",
         items = if (ru) listOf(
             "Запуск" to "Нажми Start и дождись статуса Active. Локальный адрес остаётся 127.0.0.1:1443.",
-            "Telegram" to "Нажми открыть в Telegram и включи добавленный MTProto-прокси. Повторно удалять его обычно не нужно.",
+            "Telegram" to "Нажми открыть в Telegram и включи добавленный прокси. Повторно удалять его обычно не нужно.",
             "Если висит подключение" to "Открой логи: если down растёт, данные идут. Если только err или timeout, проверь сеть и попробуй Stop/Start.",
         ) else listOf(
             "Start" to "Tap Start and wait for Active. The local endpoint stays 127.0.0.1:1443.",
-            "Telegram" to "Open the Telegram link and enable the added MTProto proxy. You normally do not need to delete it again.",
+            "Telegram" to "Open the Telegram link and enable the added proxy. You normally do not need to delete it again.",
             "Stuck connecting" to "Check logs: if down grows, data is flowing. If only err or timeout grows, check the network and try Stop/Start.",
         ),
     )
@@ -2834,6 +2810,7 @@ private fun ProxyHeroCard(
     link: String,
     stats: LatestStats,
     cfEnabled: Boolean,
+    webProxyEnabled: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenTelegram: () -> Unit,
@@ -2855,7 +2832,11 @@ private fun ProxyHeroCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    if (text.start == "Запустить") "Статус MTProto" else "MTProto Status",
+                    if (webProxyEnabled) {
+                        if (text.start == "Запустить") "Статус Web Proxy" else "Web Proxy Status"
+                    } else {
+                        if (text.start == "Запустить") "Статус MTProto" else "MTProto Status"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2864,7 +2845,7 @@ private fun ProxyHeroCard(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                 ) {
                     Text(
-                        "AES-CTR + FakeTLS",
+                        if (webProxyEnabled) "Web Proxy · tproxy-v1" else "MTProto · WSS",
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
@@ -3091,8 +3072,6 @@ private fun ConnectionCard(text: UiStrings, secret: String, link: String, status
 @Composable
 private fun SettingsCard(
     text: UiStrings,
-    fakeTlsDomain: String,
-    onFakeTlsDomainChange: (String) -> Unit,
     cfWorkerDomain: String,
     onCfWorkerDomainChange: (String) -> Unit,
     dcMappings: String,
@@ -3123,15 +3102,6 @@ private fun SettingsCard(
                         Icon(Icons.Rounded.ContentCopy, contentDescription = text.copyTelegramLink)
                     }
                 },
-            )
-            OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
-                value = fakeTlsDomain,
-                onValueChange = onFakeTlsDomainChange,
-                enabled = enabled,
-                singleLine = true,
-                label = { Text(text.fakeTlsDomain) },
-                placeholder = { Text(text.emptyDdSecret) },
             )
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
@@ -3192,34 +3162,36 @@ private fun getPingColor(ping: Long): Color = when {
 
 private fun Context.startProxyService(
     secret: String,
-    fakeTlsDomain: String,
     cfWorkerDomain: String,
     cfEnabled: Boolean,
     poolSize: Int,
     dcMappings: String,
-    allowLan: Boolean = false,
     smartStandby: Boolean = true,
+    webProxyEnabled: Boolean = false,
+    webProxyServer: String = "",
+    webProxySecret: String = "",
 ) {
-    val cleanFakeTlsDomain = ProxyConfig.normalizeDomain(fakeTlsDomain)
     val cleanWorkerDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
-    saveProxyPref(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
-    saveProxyPref(ProxyService.EXTRA_ALLOW_LAN, allowLan)
     saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
     saveProxyPref(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
+    saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
+    saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer.trim())
+    saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret.trim())
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
-        .putExtra(ProxyService.EXTRA_FAKE_TLS_DOMAIN, cleanFakeTlsDomain)
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
-        .putExtra(ProxyService.EXTRA_ALLOW_LAN, allowLan)
         .putExtra(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
         .putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
         .putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
+        .putExtra(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
+        .putExtra(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer.trim())
+        .putExtra(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret.trim())
     ContextCompat.startForegroundService(this, intent)
 }
 
