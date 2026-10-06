@@ -89,10 +89,15 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
@@ -504,6 +509,8 @@ private fun ProxyScreen(
     var isRollbackDownloading by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var lastPromptedUpdateVersion by rememberSaveable { mutableStateOf("") }
     var trafficSummary by remember { mutableStateOf(TrafficStatsManager.getSummary(context)) }
     var telegramClients by remember { mutableStateOf(emptyList<TelegramClient>()) }
     var showTelegramClientDialog by remember { mutableStateOf(false) }
@@ -532,6 +539,10 @@ private fun ProxyScreen(
                     val shouldNotify = availableUpdate?.version != update.version
                     availableUpdate = update
                     if (!manual && shouldNotify) context.notifyAvailableUpdate(update, text)
+                    if (manual || lastPromptedUpdateVersion != update.version) {
+                        lastPromptedUpdateVersion = update.version
+                        showUpdateDialog = true
+                    }
                     val tagLabel = if (update.isPrerelease) (if (language == AppLanguage.Ru) "Бета" else "Beta") else (if (language == AppLanguage.Ru) "Релиз" else "Release")
                     if (language == AppLanguage.Ru) "Доступно обновление ${update.version} ($tagLabel)" else "Update ${update.version} available ($tagLabel)"
                 }
@@ -618,6 +629,23 @@ private fun ProxyScreen(
             runUpdateCheck(manual = false)
             delay((autoUpdateValue.toLong() * autoUpdateUnit.minutes * 60_000L).coerceAtMost(365L * 24 * 60 * 60_000L))
         }
+    }
+
+    if (showUpdateDialog && availableUpdate != null) {
+        UpdateAvailableDialog(
+            language = language,
+            currentVersion = UpdateChecker.currentVersion(context),
+            update = availableUpdate!!,
+            busy = updateBusy,
+            message = updateMessage,
+            onInstall = { installAvailableUpdate() },
+            onDownloadInBrowser = {
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, availableUpdate!!.downloadUrl.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            },
+            onDismiss = { if (!updateBusy) showUpdateDialog = false },
+        )
     }
 
     if (showBetaWarningDialog) {
@@ -917,6 +945,8 @@ private fun ProxyScreen(
                         cfEnabled = cfEnabled,
                         language = language,
                         trafficSummary = trafficSummary,
+                        availableUpdate = availableUpdate,
+                        onOpenUpdateDialog = { showUpdateDialog = true },
                         webProxyEnabled = webProxyEnabled,
                         webProxyServer = webProxyServer,
                         webProxySecret = webProxySecret,
@@ -1232,6 +1262,7 @@ private fun ProxyScreen(
                         },
                         onCheckUpdate = { runUpdateCheck(manual = true) },
                         onInstallUpdate = { installAvailableUpdate() },
+                        onOpenUpdateDialog = { showUpdateDialog = true },
                     )
                     AppTab.Help -> HelpPage(language)
                 }
@@ -1263,6 +1294,8 @@ private fun HomePage(
     cfEnabled: Boolean,
     language: AppLanguage,
     trafficSummary: TrafficSummary,
+    availableUpdate: UpdateInfo?,
+    onOpenUpdateDialog: () -> Unit,
     webProxyEnabled: Boolean,
     webProxyServer: String,
     webProxySecret: String,
@@ -1288,6 +1321,13 @@ private fun HomePage(
         else -> "127.0.0.1:1443 · MTProto WS Proxy"
     }
     PageTitle(if (text.start == "Запустить") "Главная" else "Home", subtitle)
+    if (availableUpdate != null) {
+        UpdateBannerCard(
+            language = language,
+            update = availableUpdate,
+            onClick = onOpenUpdateDialog,
+        )
+    }
     VpnModeCard(
         language = language,
         mode = serviceMode,
@@ -1423,6 +1463,7 @@ private fun SettingsPage(
     onForgetTelegramClient: () -> Unit,
     onCheckUpdate: () -> Unit,
     onInstallUpdate: () -> Unit,
+    onOpenUpdateDialog: () -> Unit,
 ) {
     val context = LocalContext.current
     PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(context) + " (Build #" + UpdateChecker.currentVersionCode(context) + ")")
@@ -1485,6 +1526,7 @@ private fun SettingsPage(
         update = availableUpdate,
         onCheck = onCheckUpdate,
         onInstall = onInstallUpdate,
+        onOpenDetails = onOpenUpdateDialog,
     )
 }
 
@@ -2476,11 +2518,9 @@ private fun VersionArchiveDialog(
                                     }
 
                                     if (release.releaseNotes.isNotBlank()) {
-                                        Text(
-                                            release.releaseNotes.take(300),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 4,
+                                        FormattedReleaseNotes(
+                                            notes = release.releaseNotes,
+                                            maxItems = 4,
                                         )
                                     }
 
@@ -2774,6 +2814,344 @@ private fun getErrorColor(errors: String): Color {
 }
 
 @Composable
+private fun UpdateBannerCard(
+    language: AppLanguage,
+    update: UpdateInfo,
+    onClick: () -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f),
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        if (isRu) "🚀 Доступно обновление v${update.version}" else "🚀 Update v${update.version} available",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (update.isPrerelease) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primary,
+                    ) {
+                        Text(
+                            if (update.isPrerelease) "BETA" else "NEW",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (update.isPrerelease) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimary,
+                        )
+                    }
+                }
+                Text(
+                    if (isRu) "Нажмите, чтобы посмотреть список изменений и обновиться" else "Tap to view changelog and install update",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Button(onClick = onClick) {
+                Text(
+                    if (isRu) "Открыть" else "Open",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateAvailableDialog(
+    language: AppLanguage,
+    currentVersion: String,
+    update: UpdateInfo,
+    busy: Boolean,
+    message: String,
+    onInstall: () -> Unit,
+    onDownloadInBrowser: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val isRu = language == AppLanguage.Ru
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (isRu) "Обновление приложения" else "App Update Available",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (update.isPrerelease) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Text(
+                            if (update.isPrerelease) (if (isRu) "🧪 БЕТА" else "🧪 BETA") else (if (isRu) "🟢 РЕЛИЗ" else "🟢 RELEASE"),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (update.isPrerelease) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (isRu) "Версия:" else "Version:",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "v$currentVersion  →  v${update.version}",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (update.releaseNotes.isNotBlank()) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FormattedReleaseNotes(notes = update.releaseNotes)
+                        }
+                    }
+                }
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                ) {
+                    Text(
+                        if (isRu) {
+                            "✨ Все настройки и секреты сохранятся. После установки приложение и прокси перезапустятся автоматически."
+                        } else {
+                            "✨ All settings and secrets are preserved. The app and proxy will restart automatically after installation."
+                        },
+                        modifier = Modifier.padding(10.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (busy) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                if (message.isNotBlank()) {
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if ("mismatch" in message.lowercase() || "ошибка" in message.lowercase() || "failed" in message.lowercase()) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onDownloadInBrowser,
+                ) {
+                    ButtonText(if (isRu) "🌐 Скачать APK напрямую через браузер" else "🌐 Download APK in Browser")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onInstall,
+                enabled = !busy,
+            ) {
+                Text(
+                    if (busy) (if (isRu) "Скачивание..." else "Downloading...")
+                    else (if (isRu) "Скачать и установить" else "Download & Install"),
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        },
+        dismissButton = {
+            if (!busy) {
+                TextButton(onClick = onDismiss) {
+                    Text(if (isRu) "Позже" else "Later")
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun FormattedReleaseNotes(
+    notes: String,
+    maxItems: Int = Int.MAX_VALUE,
+) {
+    val boldColor = MaterialTheme.colorScheme.onSurface
+    val codeColor = MaterialTheme.colorScheme.primary
+    val codeBg = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+    val lines = remember(notes, maxItems) {
+        notes.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != "--" && it != "---" }
+            .take(maxItems)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        lines.forEach { line ->
+            when {
+                line.startsWith("#") -> {
+                    val cleanHeader = line.trimStart('#').trim()
+                    Text(
+                        text = parseMarkdownAnnotatedString(cleanHeader, boldColor, codeColor, codeBg),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                line.startsWith("- ") || line.startsWith("* ") || line.startsWith("• ") -> {
+                    val itemText = line.drop(2).trim()
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 6.dp)
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary),
+                            )
+                            Text(
+                                text = parseMarkdownAnnotatedString(itemText, boldColor, codeColor, codeBg),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                else -> {
+                    Text(
+                        text = parseMarkdownAnnotatedString(line, boldColor, codeColor, codeBg),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun parseMarkdownAnnotatedString(
+    raw: String,
+    boldColor: Color,
+    codeColor: Color,
+    codeBg: Color,
+): AnnotatedString {
+    val unlinked = raw.replace(Regex("""\[([^\]]+)]\(([^)]+)\)"""), "$1")
+    return buildAnnotatedString {
+        var i = 0
+        while (i < unlinked.length) {
+            when {
+                unlinked.startsWith("**", i) -> {
+                    val end = unlinked.indexOf("**", i + 2)
+                    if (end != -1) {
+                        val content = unlinked.substring(i + 2, end)
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = boldColor)) {
+                            append(content.replace("`", ""))
+                        }
+                        i = end + 2
+                    } else {
+                        i += 2
+                    }
+                }
+                unlinked[i] == '`' -> {
+                    val end = unlinked.indexOf('`', i + 1)
+                    if (end != -1) {
+                        val content = unlinked.substring(i + 1, end)
+                        withStyle(
+                            SpanStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold,
+                                color = codeColor,
+                                background = codeBg,
+                            )
+                        ) {
+                            append(" $content ")
+                        }
+                        i = end + 1
+                    } else {
+                        i += 1
+                    }
+                }
+                else -> {
+                    append(unlinked[i])
+                    i += 1
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun UpdateCard(
     text: UiStrings,
     message: String,
@@ -2781,39 +3159,71 @@ private fun UpdateCard(
     update: UpdateInfo?,
     onCheck: () -> Unit,
     onInstall: () -> Unit,
+    onOpenDetails: () -> Unit,
 ) {
+    val isRu = text.start == "Запустить"
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+        border = BorderStroke(
+            1.dp,
+            if (update != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+        ),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (update != null) {
+                        if (isRu) "Доступно обновление v${update.version}" else "Update v${update.version} available"
+                    } else text.updateCheck,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
                 if (update != null) {
-                    if (text.start == "Запустить") "Доступно обновление ${update.version}" else "Update ${update.version} available"
-                } else text.updateCheck,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Text(
+                            "v${update.version}",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+            }
             if (update != null && update.releaseNotes.isNotBlank()) {
                 Text(
-                    if (text.start == "Запустить") "Что изменилось" else "What's new",
+                    if (isRu) "Что нового:" else "What's new:",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
-                Text(update.releaseNotes.take(1800), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FormattedReleaseNotes(notes = update.releaseNotes, maxItems = 6)
             }
             Button(modifier = Modifier.fillMaxWidth(), onClick = if (update == null) onCheck else onInstall, enabled = !busy) {
                 ButtonText(if (busy) text.working else if (update != null) text.installRequiredUpdate else text.checkForUpdate)
             }
             if (update != null) {
-                OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onCheck, enabled = !busy) {
-                    ButtonText(text.checkForUpdate)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(modifier = Modifier.weight(1f), onClick = onOpenDetails, enabled = !busy) {
+                        ButtonText(if (isRu) "Окно обновления" else "Update Window")
+                    }
+                    OutlinedButton(modifier = Modifier.weight(1f), onClick = onCheck, enabled = !busy) {
+                        ButtonText(text.checkForUpdate)
+                    }
                 }
                 Text(
-                    if (text.start == "Запустить") "Обновление необязательное: прокси продолжит работать." else "The update is optional: the proxy remains available.",
+                    if (isRu) "Обновление необязательное: прокси продолжит работать." else "The update is optional: the proxy remains available.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
