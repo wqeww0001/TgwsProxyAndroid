@@ -255,7 +255,7 @@ object UpdateChecker {
     fun installApk(context: Context, file: File) {
         context.getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(PREF_REOPEN_AFTER_UPDATE, true)
-            .putBoolean(PREF_WAS_RUNNING_BEFORE_UPDATE, ProxyService.isRunning)
+            .putBoolean(PREF_WAS_RUNNING_BEFORE_UPDATE, ProxyServiceStatus.isRunning)
             .apply()
 
         val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
