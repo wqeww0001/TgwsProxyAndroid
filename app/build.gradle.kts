@@ -18,8 +18,8 @@ android {
         applicationId = "com.tgwsproxy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 28
-        versionName = "2.5.0-beta.1"
+        versionCode = 29
+        versionName = "2.5.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -30,10 +30,17 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = rootProject.file(localProperties.getProperty("RELEASE_STORE_FILE", "tgwsproxy-release.jks"))
+            val keystorePath = localProperties.getProperty("RELEASE_STORE_FILE")
+                ?: System.getenv("RELEASE_STORE_FILE")
+                ?: "tgwsproxy-release.jks"
+            storeFile = rootProject.file(keystorePath)
             storePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD")
-            keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS", "tgwsproxy")
+                ?: System.getenv("RELEASE_STORE_PASSWORD")
+            keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS")
+                ?: System.getenv("RELEASE_KEY_ALIAS")
+                ?: "tgwsproxy"
             keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD")
+                ?: System.getenv("RELEASE_KEY_PASSWORD")
         }
     }
 
@@ -41,7 +48,12 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile?.exists() == true && !releaseSigning.storePassword.isNullOrBlank()) {
+                releaseSigning
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

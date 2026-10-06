@@ -913,7 +913,6 @@ private fun ProxyScreen(
                         cfEnabled = cfEnabled,
                         language = language,
                         trafficSummary = trafficSummary,
-                        secret = secret,
                         webProxyEnabled = webProxyEnabled,
                         webProxyServer = webProxyServer,
                         webProxySecret = webProxySecret,
@@ -925,7 +924,7 @@ private fun ProxyScreen(
                             val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
                             if (parsedLink != null) {
                                 webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxySecret = parsedLink.displaySecret
                                 webProxyEnabled = true
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
@@ -939,7 +938,7 @@ private fun ProxyScreen(
                             val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
                             if (parsedLink != null) {
                                 webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxySecret = parsedLink.displaySecret
                                 webProxyEnabled = true
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
@@ -947,6 +946,30 @@ private fun ProxyScreen(
                             } else {
                                 webProxySecret = input.trim()
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                            }
+                        },
+                        onPasteWebProxyLink = { rawLink ->
+                            val parsedLink = WebProxyProtocol.parseWebProxyLink(rawLink)
+                            if (parsedLink != null) {
+                                webProxyServer = parsedLink.serverField
+                                webProxySecret = parsedLink.displaySecret
+                                webProxyEnabled = true
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
+                                Toast.makeText(
+                                    context,
+                                    if (language == AppLanguage.Ru) "Импортирован Web Proxy: ${parsedLink.serverField}"
+                                    else "Imported Web Proxy: ${parsedLink.serverField}",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    if (language == AppLanguage.Ru) "Ссылка Web Proxy не распознана"
+                                    else "Invalid Web Proxy link",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         },
                         serviceMode = serviceMode,
@@ -1066,7 +1089,7 @@ private fun ProxyScreen(
                             val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
                             if (parsedLink != null) {
                                 webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxySecret = parsedLink.displaySecret
                                 webProxyEnabled = true
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
@@ -1080,7 +1103,7 @@ private fun ProxyScreen(
                             val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
                             if (parsedLink != null) {
                                 webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.mtprotoSecretHex
+                                webProxySecret = parsedLink.displaySecret
                                 webProxyEnabled = true
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
@@ -1088,6 +1111,30 @@ private fun ProxyScreen(
                             } else {
                                 webProxySecret = input.trim()
                                 context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                            }
+                        },
+                        onPasteWebProxyLink = { rawLink ->
+                            val parsedLink = WebProxyProtocol.parseWebProxyLink(rawLink)
+                            if (parsedLink != null) {
+                                webProxyServer = parsedLink.serverField
+                                webProxySecret = parsedLink.displaySecret
+                                webProxyEnabled = true
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
+                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
+                                Toast.makeText(
+                                    context,
+                                    if (language == AppLanguage.Ru) "Импортирован Web Proxy: ${parsedLink.serverField}"
+                                    else "Imported Web Proxy: ${parsedLink.serverField}",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    if (language == AppLanguage.Ru) "Ссылка Web Proxy не распознана"
+                                    else "Invalid Web Proxy link",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         },
                         appChannel = appChannel,

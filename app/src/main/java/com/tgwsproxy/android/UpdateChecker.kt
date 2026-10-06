@@ -119,6 +119,7 @@ object UpdateChecker {
         }.getOrElse {
             // Fallback list of known historical releases
             listOf(
+                ReleaseArchiveItem("2.5.0", "v2.5.0", "TgwsProxyAndroid v2.5.0", "Поддержка нового протокола Telegram Web Proxy (tproxy-v1 / t.me/webproxy), встроенный мост 127.0.0.1:1443 (https/websocket lanes), удаление устаревшего FakeTLS и LAN-раздачи.", "2026-10-06", false, "https://github.com/$cleanRepo/releases/download/v2.5.0/app-release.apk"),
                 ReleaseArchiveItem("2.4.2", "v2.4.2", "TgwsProxyAndroid v2.4.2", "Исправление багов шторки, пресетов и теста доменов. Система каналов и откат версий.", "2026-09-01", false, "https://github.com/$cleanRepo/releases/download/v2.4.2/app-release.apk"),
                 ReleaseArchiveItem("2.4.1", "v2.4.1", "TgwsProxyAndroid v2.4.1", "Плитка в шторке, LAN режим 0.0.0.0 с QR-кодом, Smart Standby, пресеты, история трафика.", "2026-08-31", false, "https://github.com/$cleanRepo/releases/download/v2.4.1/app-release.apk"),
                 ReleaseArchiveItem("2.4.0", "v2.4.0", "TgwsProxyAndroid v2.4.0", "Минималистичный редизайн, оптимизация энергопотребления и батареи.", "2026-08-28", false, "https://github.com/$cleanRepo/releases/download/v2.4.0/app-release.apk"),
