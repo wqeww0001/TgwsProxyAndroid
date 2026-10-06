@@ -641,7 +641,7 @@ private fun ProxyScreen(
             onInstall = { installAvailableUpdate() },
             onDownloadInBrowser = {
                 runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, availableUpdate!!.downloadUrl.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    context.startActivity(Intent(Intent.ACTION_VIEW, availableUpdate!!.apkUrl.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
             },
             onDismiss = { if (!updateBusy) showUpdateDialog = false },
