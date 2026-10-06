@@ -139,9 +139,13 @@ class MainActivity : ComponentActivity() {
             WebProxyProtocol.parseWebProxyLink(dataUrl)?.let { endpoint ->
                 saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
                 saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, endpoint.serverField)
-                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, endpoint.mtprotoSecretHex)
+                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, endpoint.displaySecret)
                 Toast.makeText(this, "Web Proxy: ${endpoint.serverField}", Toast.LENGTH_SHORT).show()
             }
+        }
+        if (intent?.getBooleanExtra("updated_just_now", false) == true) {
+            intent?.removeExtra("updated_just_now")
+            Toast.makeText(this, "Обновлено до v${UpdateChecker.currentVersion(this)} ✓", Toast.LENGTH_SHORT).show()
         }
         setContent {
             val context = LocalContext.current

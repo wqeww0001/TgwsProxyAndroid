@@ -249,12 +249,22 @@ object UpdateChecker {
         return file
     }
 
+    const val PREF_REOPEN_AFTER_UPDATE = "reopen_after_update"
+    const val PREF_WAS_RUNNING_BEFORE_UPDATE = "was_running_before_update"
+
     fun installApk(context: Context, file: File) {
+        context.getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(PREF_REOPEN_AFTER_UPDATE, true)
+            .putBoolean(PREF_WAS_RUNNING_BEFORE_UPDATE, ProxyService.isRunning)
+            .apply()
+
         val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         val intent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, "application/vnd.android.package-archive")
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (context !is android.app.Activity) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         context.startActivity(intent)
     }
 
