@@ -38,44 +38,6 @@ data class ProxyProfile(
     }
 
     companion object {
-        val FAST_CLOUDFLARE = ProxyProfile(
-            id = "fast_cf",
-            ruName = "Скоростной (Cloudflare)",
-            enName = "Fast (Cloudflare)",
-            ruDesc = "Приоритет Cloudflare CDN + пул 4 соединения",
-            enDesc = "Cloudflare CDN priority + 4 connection pool",
-            cfWorkerDomain = "",
-            cfEnabled = true,
-            poolSize = 4,
-            smartStandby = true,
-        )
-
-        val DIRECT_WSS = ProxyProfile(
-            id = "direct_wss",
-            ruName = "Прямой WSS (Низкий пинг)",
-            enName = "Direct WSS (Low Ping)",
-            ruDesc = "Прямое соединение с Telegram DC без Cloudflare",
-            enDesc = "Direct WSS to Telegram DC without Cloudflare",
-            cfWorkerDomain = "",
-            cfEnabled = false,
-            poolSize = 4,
-            smartStandby = true,
-        )
-
-        val ECO_BATTERY = ProxyProfile(
-            id = "eco_battery",
-            ruName = "Энергосбережение (Eco)",
-            enName = "Eco Battery",
-            ruDesc = "Минимальный пул 2 WSS + режим сна",
-            enDesc = "Minimal 2 WSS pool + sleep mode",
-            cfWorkerDomain = "",
-            cfEnabled = true,
-            poolSize = 2,
-            smartStandby = true,
-        )
-
-        val PRESETS = listOf(FAST_CLOUDFLARE, DIRECT_WSS, ECO_BATTERY)
-
         data class ImportedConfig(
             val secret: String?,
             val cfWorkerDomain: String,

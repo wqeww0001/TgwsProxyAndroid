@@ -201,12 +201,13 @@ pub extern "C" fn StopProxy() -> c_int {
 }
 
 fn stop_proxy_impl() -> c_int {
-    let cell = state_cell();
-    let mut guard = cell.lock();
-
-    let state = match guard.take() {
-        Some(s) => s,
-        None => return -1,
+    let state = {
+        let cell = state_cell();
+        let mut guard = cell.lock();
+        match guard.take() {
+            Some(s) => s,
+            None => return -1,
+        }
     };
 
     // graceful shutdown — НЕ дропаем рантайм

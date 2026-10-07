@@ -7,6 +7,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicLong
 
 object ProxyLogger {
     private const val TAG = "TgWsProxy"
@@ -15,6 +16,7 @@ object ProxyLogger {
     private const val TRIMMED_LOG_FILE_BYTES = 512 * 1024
     private val timeFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS").withZone(ZoneId.systemDefault())
     private val lines = ConcurrentLinkedDeque<String>()
+    private val versionCounter = AtomicLong(0L)
     private val fileLock = Any()
 
     @Volatile
@@ -34,6 +36,8 @@ object ProxyLogger {
     fun i(message: String) = log(Log.INFO, "I", message, null)
     fun w(message: String, throwable: Throwable? = null) = log(Log.WARN, "W", message, throwable)
     fun e(message: String, throwable: Throwable? = null) = log(Log.ERROR, "E", message, throwable)
+
+    fun version(): Long = versionCounter.get()
 
     fun snapshot(): List<String> = lines.toList()
 
@@ -60,6 +64,7 @@ object ProxyLogger {
         val line = "${timeFormat.format(Instant.now())} $level $message${throwable?.message?.let { ": $it" } ?: ""}"
         lines.addLast(line)
         while (lines.size > MAX_LINES) lines.pollFirst()
+        versionCounter.incrementAndGet()
         persist(line, throwable)
         if (throwable == null) {
             Log.println(priority, TAG, message)

@@ -13,6 +13,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -340,43 +341,40 @@ object WebProxyEngine {
     ) {
         val closed = AtomicBoolean(false)
         private var sendWindowBytes: Long = WebProxyProtocol.INITIAL_STREAM_WINDOW.toLong()
-        private val windowLock = java.util.concurrent.locks.ReentrantLock()
-        private val windowCondition = windowLock.newCondition()
+        private val windowLock = Any()
+        private val windowSignal = Channel<Unit>(Channel.CONFLATED)
         val laneOutbound = Channel<ByteArray>(capacity = 256)
 
-        fun consumeSendWindow(requested: Int): Int {
-            windowLock.lock()
-            try {
-                while (sendWindowBytes <= 0L && !closed.get()) {
-                    windowCondition.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        suspend fun consumeSendWindow(requested: Int): Int {
+            while (!closed.get()) {
+                val granted = synchronized(windowLock) {
+                    if (closed.get()) return -1
+                    if (sendWindowBytes > 0L) {
+                        val g = minOf(requested.toLong(), sendWindowBytes).toInt()
+                        sendWindowBytes -= g
+                        g
+                    } else {
+                        0
+                    }
                 }
-                if (closed.get()) return -1
-                val granted = minOf(requested.toLong(), sendWindowBytes).toInt()
-                sendWindowBytes -= granted
-                return granted
-            } finally {
-                windowLock.unlock()
+                if (granted > 0) return granted
+                withTimeoutOrNull(500) {
+                    windowSignal.receiveCatching()
+                }
             }
+            return -1
         }
 
         fun grantSendWindow(delta: Long) {
-            windowLock.lock()
-            try {
+            synchronized(windowLock) {
                 sendWindowBytes += delta
-                windowCondition.signalAll()
-            } finally {
-                windowLock.unlock()
             }
+            windowSignal.trySend(Unit)
         }
 
         fun markClosed() {
             if (closed.compareAndSet(false, true)) {
-                windowLock.lock()
-                try {
-                    windowCondition.signalAll()
-                } finally {
-                    windowLock.unlock()
-                }
+                windowSignal.close()
                 laneOutbound.close()
                 runCatching { socket.close() }
             }
@@ -410,12 +408,7 @@ object WebProxyEngine {
                                 delay(5_000)
                             }
                         }
-                        "https-lanes" -> {
-                            // Lane 0 handles session-level PONGs if any; streams run their own lane in bridgeStream()
-                            while (isActive && alive.get()) {
-                                delay(5_000)
-                            }
-                        }
+                        "https-lanes" -> runHttpsControlLane()
                         else -> runSerializedHttpsCarrier()
                     }
                 } catch (ce: CancellationException) {
@@ -622,6 +615,58 @@ object WebProxyEngine {
         // ---------------------------------------------------------------------
         // Carrier 2: Stream-aware HTTPS Lanes (X-Lane-ID)
         // ---------------------------------------------------------------------
+
+        private suspend fun runHttpsControlLane() {
+            val upUrl = "https://${endpoint.host}${endpoint.basePrefix}api/v1/up"
+            val downUrl = "https://${endpoint.host}${endpoint.basePrefix}api/v1/down"
+
+            val upJob = sessionScope.launch {
+                var upSeq = 1L
+                while (isActive && alive.get()) {
+                    val first = outboundFrames.receiveCatching().getOrNull() ?: break
+                    val batch = coalesceFrames(first, outboundFrames)
+                    postUplinkBatch(upUrl, upSeq, batch, laneId = 0)
+                    upSeq++
+                }
+            }
+
+            val downJob = sessionScope.launch {
+                var cursor = initialDownCursor
+                while (isActive && alive.get()) {
+                    val conn = openHttpsConnection(downUrl, "POST", endpoint.host)
+                    conn.setRequestProperty("Authorization", "Bearer $sessionToken")
+                    conn.setRequestProperty("X-Down-Cursor", cursor)
+                    conn.setRequestProperty("X-Lane-ID", "0")
+                    conn.doOutput = true
+                    conn.setFixedLengthStreamingMode(0)
+                    conn.outputStream.close()
+
+                    val code = conn.responseCode
+                    val nextCursor = conn.getHeaderField("X-Down-Cursor")?.trim()
+                    if (!nextCursor.isNullOrEmpty()) cursor = nextCursor
+
+                    when (code) {
+                        200 -> {
+                            val body = conn.inputStream.use { it.readBytes() }
+                            conn.disconnect()
+                            if (body.isNotEmpty()) handleIncomingFrames(body)
+                        }
+                        204 -> conn.disconnect()
+                        503 -> {
+                            conn.disconnect()
+                            delay(1000)
+                        }
+                        else -> {
+                            conn.disconnect()
+                            break
+                        }
+                    }
+                }
+            }
+
+            upJob.join()
+            downJob.cancel()
+        }
 
         private suspend fun runHttpsLane(state: StreamState) {
             val upUrl = "https://${endpoint.host}${endpoint.basePrefix}api/v1/up"

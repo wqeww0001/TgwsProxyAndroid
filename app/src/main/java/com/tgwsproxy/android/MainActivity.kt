@@ -31,6 +31,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
@@ -41,8 +43,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,15 +56,33 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Science
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -71,6 +93,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -97,6 +120,8 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -108,14 +133,6 @@ import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.tgwsproxy.android.AppChannel
 import com.tgwsproxy.android.ReleaseArchiveItem
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import android.app.Activity
-import android.net.VpnService
-import com.tgwsproxy.android.vpn.ServiceOperationMode
-import com.tgwsproxy.android.vpn.TelegramPackageDetector
-import com.tgwsproxy.android.vpn.TgwsVpnService
-import com.tgwsproxy.android.vpn.VpnStatus
 import com.tgwsproxy.android.config.ProxyProfile
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
@@ -150,14 +167,17 @@ class MainActivity : ComponentActivity() {
         }
         if (intent?.getBooleanExtra("updated_just_now", false) == true) {
             intent?.removeExtra("updated_just_now")
-            Toast.makeText(this, "Обновлено до v${UpdateChecker.currentVersion(this)} ✓", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Обновлено до v${UpdateChecker.currentVersion(this)}", Toast.LENGTH_SHORT).show()
         }
         setContent {
             val context = LocalContext.current
             var themeMode by rememberSaveable {
                 mutableStateOf(AppThemeMode.from(context.getProxyPref(THEME_PREF, AppThemeMode.Light.name)))
             }
-            TgwsProxyAndroidTheme(darkTheme = themeMode == AppThemeMode.Dark) {
+            TgwsProxyAndroidTheme(
+                darkTheme = themeMode != AppThemeMode.Light,
+                themeName = themeMode.name,
+            ) {
                 ProxyScreen(
                     themeMode = themeMode,
                     onThemeModeChange = {
@@ -426,8 +446,8 @@ private fun ProxyScreen(
         )
     }
     val text = strings(language)
-    var proxyStatus by remember { mutableStateOf(ProxyStatus()) }
-    var logLines by remember { mutableStateOf(emptyList<String>()) }
+    val proxyStatusState = remember { mutableStateOf(ProxyStatus()) }
+    val logLinesState = remember { mutableStateOf(emptyList<String>()) }
     var secret by remember { mutableStateOf("") }
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
     var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, true)) }
@@ -465,44 +485,6 @@ private fun ProxyScreen(
     }
     var showBetaWarningDialog by remember { mutableStateOf(false) }
     var showArchiveDialog by remember { mutableStateOf(false) }
-    var serviceMode by rememberSaveable {
-        mutableStateOf(
-            ServiceOperationMode.entries.firstOrNull {
-                it.key == context.getProxyPref("service_mode", ServiceOperationMode.ProxyOnly.key)
-            } ?: ServiceOperationMode.ProxyOnly
-        )
-    }
-    var isVpnActive by remember { mutableStateOf(VpnStatus.isVpnRunning) }
-    val detectedApps = remember { TelegramPackageDetector.getInstalledTelegramApps(context) }
-
-    val vpnPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            TgwsVpnService.start(context)
-            isVpnActive = true
-            Toast.makeText(context, if (language == AppLanguage.Ru) "VPN-туннель для звонков запущен" else "VPN Tunnel for Calls started", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(context, if (language == AppLanguage.Ru) "Разрешение VPN отклонено" else "VPN permission rejected", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    fun toggleVpnTunnel() {
-        if (isVpnActive) {
-            TgwsVpnService.stop(context)
-            isVpnActive = false
-            Toast.makeText(context, if (language == AppLanguage.Ru) "VPN-туннель остановлен" else "VPN Tunnel stopped", Toast.LENGTH_SHORT).show()
-        } else {
-            val vpnIntent = VpnService.prepare(context)
-            if (vpnIntent != null) {
-                vpnPermissionLauncher.launch(vpnIntent)
-            } else {
-                TgwsVpnService.start(context)
-                isVpnActive = true
-                Toast.makeText(context, if (language == AppLanguage.Ru) "VPN-туннель для звонков запущен" else "VPN Tunnel for Calls started", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
     var archiveReleases by remember { mutableStateOf<List<ReleaseArchiveItem>>(emptyList()) }
     var isArchiveLoading by remember { mutableStateOf(false) }
     var rollbackConfirmRelease by remember { mutableStateOf<ReleaseArchiveItem?>(null) }
@@ -511,12 +493,15 @@ private fun ProxyScreen(
     var showExportDialog by remember { mutableStateOf(false) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var lastPromptedUpdateVersion by rememberSaveable { mutableStateOf("") }
-    var trafficSummary by remember { mutableStateOf(TrafficStatsManager.getSummary(context)) }
+    val trafficSummaryState = remember { mutableStateOf(TrafficStatsManager.getSummary(context)) }
     var telegramClients by remember { mutableStateOf(emptyList<TelegramClient>()) }
     var showTelegramClientDialog by remember { mutableStateOf(false) }
     var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
     var showSplash by rememberSaveable { mutableStateOf(true) }
     var batteryUnrestricted by remember { mutableStateOf(context.isIgnoringBatteryOptimizations()) }
+    val isProxyRunning by remember { derivedStateOf { proxyStatusState.value.isRunning } }
+    val isProxyStarting by remember { derivedStateOf { proxyStatusState.value.isStarting } }
+    val isProxyEditable by remember { derivedStateOf { !proxyStatusState.value.isRunning && !proxyStatusState.value.isStarting } }
     val link = remember(secret, webProxyEnabled, webProxyServer, webProxySecret) {
         ProxyConfig.telegramProxyLinkForMode(secret, webProxyEnabled, webProxyServer, webProxySecret)
     }
@@ -603,22 +588,30 @@ private fun ProxyScreen(
 
     LaunchedEffect(Unit) {
         secret = withContext(Dispatchers.IO) { context.getOrCreateProxySecret() }
-        delay(1200)
+        delay(250)
         showSplash = false
     }
 
     LaunchedEffect(Unit) {
+        var lastLogVer = -1L
         while (isActive) {
             val running = ProxyServiceStatus.isRunning
-            isVpnActive = VpnStatus.isVpnRunning
-            proxyStatus = if (running) {
+            val newStatus = if (running) {
                 ProxyStatus(true, ProxyServiceStatus.getUptime(), ProxyServiceStatus.lastPing)
             } else {
                 ProxyStatus(isStarting = ProxyServiceStatus.isStarting)
             }
-            logLines = withContext(Dispatchers.IO) { ProxyLogger.snapshot().takeLast(120) }
-            batteryUnrestricted = context.isIgnoringBatteryOptimizations()
-            trafficSummary = TrafficStatsManager.getSummary(context)
+            if (newStatus != proxyStatusState.value) proxyStatusState.value = newStatus
+            val currentLogVer = ProxyLogger.version()
+            if (currentLogVer != lastLogVer) {
+                lastLogVer = currentLogVer
+                val newLogs = withContext(Dispatchers.IO) { ProxyLogger.snapshot().takeLast(120) }
+                if (newLogs != logLinesState.value) logLinesState.value = newLogs
+            }
+            val newBattery = context.isIgnoringBatteryOptimizations()
+            if (newBattery != batteryUnrestricted) batteryUnrestricted = newBattery
+            val newTraffic = TrafficStatsManager.getSummary(context)
+            if (newTraffic != trafficSummaryState.value) trafficSummaryState.value = newTraffic
             delay(1000)
         }
     }
@@ -651,13 +644,20 @@ private fun ProxyScreen(
     if (showBetaWarningDialog) {
         AlertDialog(
             onDismissRequest = { showBetaWarningDialog = false },
-            title = { Text(if (language == AppLanguage.Ru) "🧪 Включение Бета-канала" else "🧪 Enable Beta Channel") },
+            icon = {
+                Icon(
+                    Icons.Rounded.Science,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            },
+            title = { Text(if (language == AppLanguage.Ru) "Включение Бета-канала" else "Enable Beta Channel") },
             text = {
                 Text(
                     if (language == AppLanguage.Ru) {
-                        "⚠️ Внимание: бета-сборки и снапшоты предназначены исключительно для предварительного тестирования.\n\nУстановка осуществляется на свой страх и риск — возможна нестабильная работа, ошибки прокси и повышенный расход батареи!\n\nВы действительно хотите переключиться на Бета-канал?"
+                        "Внимание: бета-сборки и снапшоты предназначены исключительно для предварительного тестирования.\n\nУстановка осуществляется на свой страх и риск — возможна нестабильная работа, ошибки прокси и повышенный расход батареи!\n\nВы действительно хотите переключиться на Бета-канал?"
                     } else {
-                        "⚠️ Warning: Beta builds and snapshots are intended for preliminary testing only.\n\nInstallation is at your own risk — builds may contain bugs, crashes, or higher battery drain!\n\nAre you sure you want to switch to the Beta channel?"
+                        "Warning: Beta builds and snapshots are intended for preliminary testing only.\n\nInstallation is at your own risk — builds may contain bugs, crashes, or higher battery drain!\n\nAre you sure you want to switch to the Beta channel?"
                     }
                 )
             },
@@ -701,7 +701,14 @@ private fun ProxyScreen(
         val targetRelease = rollbackConfirmRelease!!
         AlertDialog(
             onDismissRequest = { if (!isRollbackDownloading) rollbackConfirmRelease = null },
-            title = { Text(if (language == AppLanguage.Ru) "⏪ Откат на версию ${targetRelease.version}" else "⏪ Rollback to ${targetRelease.version}") },
+            icon = {
+                Icon(
+                    Icons.Rounded.History,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            },
+            title = { Text(if (language == AppLanguage.Ru) "Откат на версию ${targetRelease.version}" else "Rollback to ${targetRelease.version}") },
             text = {
                 Text(
                     if (language == AppLanguage.Ru) {
@@ -837,6 +844,7 @@ private fun ProxyScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .statusBarsPadding()
                         .padding(horizontal = 18.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
@@ -868,59 +876,64 @@ private fun ProxyScreen(
                                 .size(8.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (proxyStatus.isRunning) SignalMint
-                                    else if (proxyStatus.isStarting) SignalAmber
+                                    if (isProxyRunning) SignalMint
+                                    else if (isProxyStarting) SignalAmber
                                     else MaterialTheme.colorScheme.outline,
                                 ),
                         )
                         Text(
-                            if (proxyStatus.isRunning) (if (language == AppLanguage.Ru) "Активен" else "Active")
-                            else if (proxyStatus.isStarting) (if (language == AppLanguage.Ru) "Запуск..." else "Starting...")
+                            if (isProxyRunning) (if (language == AppLanguage.Ru) "Активен" else "Active")
+                            else if (isProxyStarting) (if (language == AppLanguage.Ru) "Запуск..." else "Starting...")
                             else (if (language == AppLanguage.Ru) "Остановлен" else "Stopped"),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Medium,
-                            color = if (proxyStatus.isRunning) SignalMint else if (proxyStatus.isStarting) SignalAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (isProxyRunning) SignalMint else if (isProxyStarting) SignalAmber else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             }
         },
         bottomBar = {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.20f)),
+            NavigationBar(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding(),
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceAround,
-                ) {
-                    AppTab.entries.forEachIndexed { index, tab ->
-                        val isSelected = pagerState.currentPage == index
-                        val tabName = when (tab) {
-                            AppTab.Home -> if (language == AppLanguage.Ru) "Главная" else "Home"
-                            AppTab.Settings -> if (language == AppLanguage.Ru) "Настройки" else "Settings"
-                            AppTab.Logs -> if (language == AppLanguage.Ru) "Журнал" else "Logs"
-                            AppTab.Help -> if (language == AppLanguage.Ru) "Справка" else "Help"
-                        }
-                        Surface(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { scope.launch { pagerState.animateScrollToPage(index) } },
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                            shape = RoundedCornerShape(10.dp),
-                        ) {
+                AppTab.entries.forEachIndexed { index, tab ->
+                    val isSelected = pagerState.currentPage == index
+                    val tabName = when (tab) {
+                        AppTab.Home -> if (language == AppLanguage.Ru) "Главная" else "Home"
+                        AppTab.Settings -> if (language == AppLanguage.Ru) "Настройки" else "Settings"
+                        AppTab.Logs -> if (language == AppLanguage.Ru) "Журнал" else "Logs"
+                        AppTab.Help -> if (language == AppLanguage.Ru) "Справка" else "Help"
+                    }
+                    val tabIcon = when (tab) {
+                        AppTab.Home -> Icons.Rounded.Home
+                        AppTab.Settings -> Icons.Rounded.Settings
+                        AppTab.Logs -> Icons.Rounded.Terminal
+                        AppTab.Help -> Icons.Rounded.HelpOutline
+                    }
+                    NavigationBarItem(
+                        selected = isSelected,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(index) } },
+                        icon = { Icon(tabIcon, contentDescription = tabName) },
+                        label = {
                             Text(
                                 text = tabName,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelSmall,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                        }
-                    }
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    )
                 }
             }
         },
@@ -931,177 +944,110 @@ private fun ProxyScreen(
             beyondViewportPageCount = 1,
             key = { AppTab.entries[it].name },
         ) { page ->
+            val currentTab = AppTab.entries[page]
             Box(modifier = Modifier.fillMaxSize().background(appBackgroundBrush(themeMode))) {
+                val columnModifier = if (currentTab == AppTab.Logs) {
+                    Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 16.dp)
+                } else {
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp)
+                }
                 Column(
-                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp),
+                    modifier = columnModifier,
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    when (AppTab.entries[page]) {
-                    AppTab.Home -> HomePage(
-                        text = text,
-                        status = proxyStatus,
-                        link = link,
-                        logs = logLines,
-                        cfEnabled = cfEnabled,
-                        language = language,
-                        trafficSummary = trafficSummary,
-                        availableUpdate = availableUpdate,
-                        onOpenUpdateDialog = { showUpdateDialog = true },
-                        webProxyEnabled = webProxyEnabled,
-                        webProxyServer = webProxyServer,
-                        webProxySecret = webProxySecret,
-                        onWebProxyEnabledChange = {
-                            webProxyEnabled = it
-                            context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, it)
-                        },
-                        onWebProxyServerChange = { input ->
-                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
-                            if (parsedLink != null) {
-                                webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.displaySecret
-                                webProxyEnabled = true
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
-                            } else {
-                                webProxyServer = input.trim()
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                            }
-                        },
-                        onWebProxySecretChange = { input ->
-                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
-                            if (parsedLink != null) {
-                                webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.displaySecret
-                                webProxyEnabled = true
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
-                            } else {
-                                webProxySecret = input.trim()
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                            }
-                        },
-                        onPasteWebProxyLink = { rawLink ->
-                            val parsedLink = WebProxyProtocol.parseWebProxyLink(rawLink)
-                            if (parsedLink != null) {
-                                webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.displaySecret
-                                webProxyEnabled = true
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
-                                Toast.makeText(
-                                    context,
-                                    if (language == AppLanguage.Ru) "Импортирован Web Proxy: ${parsedLink.serverField}"
-                                    else "Imported Web Proxy: ${parsedLink.serverField}",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            } else {
-                                Toast.makeText(
-                                    context,
-                                    if (language == AppLanguage.Ru) "Ссылка Web Proxy не распознана"
-                                    else "Invalid Web Proxy link",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            }
-                        },
-                        serviceMode = serviceMode,
-                        isVpnActive = isVpnActive,
-                        detectedAppsCount = detectedApps.size,
-                        onToggleMode = { newMode ->
-                            serviceMode = newMode
-                            context.saveProxyPref("service_mode", newMode.key)
-                        },
-                        onToggleVpn = { toggleVpnTunnel() },
-                        onResetTraffic = {
-                            TrafficStatsManager.resetStats(context)
-                            trafficSummary = TrafficStatsManager.getSummary(context)
-                        },
-                        onStart = {
-                            if (!ProxyConfig.isValidDcMappings(dcMappings)) {
-                                Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
-                            } else if (webProxyEnabled && WebProxyProtocol.parseEndpointInput(webProxyServer, webProxySecret.ifBlank { secret }) == null) {
-                                Toast.makeText(
-                                    context,
-                                    if (language == AppLanguage.Ru) "Укажите корректный сервер и секрет Web Proxy" else "Enter a valid Web Proxy server and secret",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            } else {
-                                context.startProxyService(
-                                    secret = secret,
-                                    cfWorkerDomain = cfWorkerDomain,
-                                    cfEnabled = cfEnabled,
-                                    poolSize = poolSize,
-                                    dcMappings = dcMappings,
-                                    smartStandby = smartStandby,
-                                    webProxyEnabled = webProxyEnabled,
-                                    webProxyServer = webProxyServer,
-                                    webProxySecret = webProxySecret,
-                                )
-                                if (serviceMode == ServiceOperationMode.VpnTunnel && !isVpnActive) {
-                                    toggleVpnTunnel()
+                    when (currentTab) {
+                        AppTab.Home -> HomePage(
+                            text = text,
+                            statusProvider = { proxyStatusState.value },
+                            link = link,
+                            logsProvider = { logLinesState.value },
+                            cfEnabled = cfEnabled,
+                            language = language,
+                            trafficProvider = { trafficSummaryState.value },
+                            availableUpdate = availableUpdate,
+                            onOpenUpdateDialog = { showUpdateDialog = true },
+                            webProxyEnabled = webProxyEnabled,
+                            onResetTraffic = {
+                                TrafficStatsManager.resetStats(context)
+                                trafficSummaryState.value = TrafficStatsManager.getSummary(context)
+                            },
+                            onStart = {
+                                if (!ProxyConfig.isValidDcMappings(dcMappings)) {
+                                    Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
+                                } else if (webProxyEnabled && WebProxyProtocol.parseEndpointInput(webProxyServer, webProxySecret.ifBlank { secret }) == null) {
+                                    Toast.makeText(
+                                        context,
+                                        if (language == AppLanguage.Ru) "Укажите корректный сервер и секрет Web Proxy" else "Enter a valid Web Proxy server and secret",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                } else {
+                                    context.startProxyService(
+                                        secret = secret,
+                                        cfWorkerDomain = cfWorkerDomain,
+                                        cfEnabled = cfEnabled,
+                                        poolSize = poolSize,
+                                        dcMappings = dcMappings,
+                                        smartStandby = smartStandby,
+                                        webProxyEnabled = webProxyEnabled,
+                                        webProxyServer = webProxyServer,
+                                        webProxySecret = webProxySecret,
+                                    )
+                                    proxyStatusState.value = ProxyStatus(isStarting = true)
                                 }
-                                proxyStatus = ProxyStatus(isStarting = true)
-                            }
-                        },
-                        onStop = {
-                            context.stopService(Intent(context, ProxyService::class.java))
-                            if (isVpnActive) {
-                                TgwsVpnService.stop(context)
-                                isVpnActive = false
-                            }
-                            proxyStatus = ProxyStatus(false)
-                        },
-                        onCopyLink = {
-                            context.copyToClipboard(link)
-                            Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
-                        },
-                        onOpenTelegram = {
-                            val savedPackage = context.getProxyPref(TELEGRAM_CLIENT_PREF, "")
-                            if (!context.openTelegram(link, savedPackage)) {
-                                telegramClients = context.findTelegramClients(link)
-                                when (telegramClients.size) {
-                                    0 -> if (!context.openTelegramWithSystemChooser(link)) {
-                                        Toast.makeText(context, if (language == AppLanguage.Ru) "Telegram не найден" else "Telegram app not found", Toast.LENGTH_SHORT).show()
+                            },
+                            onStop = {
+                                context.stopService(Intent(context, ProxyService::class.java))
+                                proxyStatusState.value = ProxyStatus(false)
+                            },
+                            onCopyLink = {
+                                context.copyToClipboard(link)
+                                Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
+                            },
+                            onOpenTelegram = {
+                                val savedPackage = context.getProxyPref(TELEGRAM_CLIENT_PREF, "")
+                                if (!context.openTelegram(link, savedPackage)) {
+                                    telegramClients = context.findTelegramClients(link)
+                                    when (telegramClients.size) {
+                                        0 -> if (!context.openTelegramWithSystemChooser(link)) {
+                                            Toast.makeText(context, if (language == AppLanguage.Ru) "Telegram не найден" else "Telegram app not found", Toast.LENGTH_SHORT).show()
+                                        }
+                                        1 -> {
+                                            context.saveProxyPref(TELEGRAM_CLIENT_PREF, telegramClients.first().packageName)
+                                            context.openTelegram(link, telegramClients.first().packageName)
+                                        }
+                                        else -> showTelegramClientDialog = true
                                     }
-                                    1 -> {
-                                        context.saveProxyPref(TELEGRAM_CLIENT_PREF, telegramClients.first().packageName)
-                                        context.openTelegram(link, telegramClients.first().packageName)
-                                    }
-                                    else -> showTelegramClientDialog = true
                                 }
-                            }
-                        },
-                    )
-                    AppTab.Logs -> LogsPage(
-                        text = text,
-                        logs = logLines,
-                        onDownload = {
-                            scope.launch {
-                                val result = withContext(Dispatchers.IO) { context.saveLogsToDownloads() }
-                                Toast.makeText(context, if (result) text.logsSaved else text.logsSaveFailed, Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                    )
-                    AppTab.Settings -> SettingsPage(
-                        text = text,
-                        language = language,
-                        onLanguageChange = {
-                            language = it
-                            context.saveProxyPref(LANGUAGE_PREF, it.code)
-                        },
-                        cfWorkerDomain = cfWorkerDomain,
-                        onCfWorkerDomainChange = {
-                            cfWorkerDomain = ProxyConfig.cleanDomain(it)
-                            context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
-                        },
-                        dcMappings = dcMappings,
-                        onDcMappingsChange = {
-                            dcMappings = it
-                            context.saveProxyPref(ProxyService.EXTRA_DC_IPS, it)
-                        },
-                        enabled = !proxyStatus.isRunning && !proxyStatus.isStarting,
+                            },
+                        )
+                        AppTab.Logs -> LogsPage(
+                            text = text,
+                            logsProvider = { logLinesState.value },
+                            onDownload = {
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) { context.saveLogsToDownloads() }
+                                    Toast.makeText(context, if (result) text.logsSaved else text.logsSaveFailed, Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                        )
+                        AppTab.Settings -> SettingsPage(
+                            text = text,
+                            language = language,
+                            onLanguageChange = {
+                                language = it
+                                context.saveProxyPref(LANGUAGE_PREF, it.code)
+                            },
+                            cfWorkerDomain = cfWorkerDomain,
+                            onCfWorkerDomainChange = {
+                                cfWorkerDomain = ProxyConfig.cleanDomain(it)
+                                context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
+                            },
+                            dcMappings = dcMappings,
+                            onDcMappingsChange = {
+                                dcMappings = it
+                                context.saveProxyPref(ProxyService.EXTRA_DC_IPS, it)
+                            },
+                            enabled = isProxyEditable,
                         cfEnabled = cfEnabled,
                         onCfEnabledChange = {
                             cfEnabled = it
@@ -1185,34 +1131,6 @@ private fun ProxyScreen(
                             showArchiveDialog = true
                             loadReleaseArchive()
                         },
-                        onApplyProfile = { profile ->
-                            cfWorkerDomain = profile.cfWorkerDomain
-                            cfEnabled = profile.cfEnabled
-                            poolSize = profile.poolSize
-                            smartStandby = profile.smartStandby
-                            if (profile.dcMappings.isNotBlank()) dcMappings = profile.dcMappings
-                            context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
-                            context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
-                            context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
-                            context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
-                            if (profile.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
-                            if (proxyStatus.isRunning) {
-                                context.startProxyService(
-                                    secret = secret,
-                                    cfWorkerDomain = cfWorkerDomain,
-                                    cfEnabled = cfEnabled,
-                                    poolSize = poolSize,
-                                    dcMappings = dcMappings,
-                                    smartStandby = smartStandby,
-                                    webProxyEnabled = webProxyEnabled,
-                                    webProxyServer = webProxyServer,
-                                    webProxySecret = webProxySecret,
-                                )
-                                Toast.makeText(context, if (language == AppLanguage.Ru) "Профиль ${profile.name(true)} применен (прокси перезапущен)" else "Applied profile ${profile.name(false)} (proxy reloaded)", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, if (language == AppLanguage.Ru) "Применен профиль: ${profile.name(true)}" else "Applied profile: ${profile.name(false)}", Toast.LENGTH_SHORT).show()
-                            }
-                        },
                         onOpenExport = { showExportDialog = true },
                         onOpenImport = { showImportDialog = true },
                         secret = secret,
@@ -1276,8 +1194,8 @@ private fun ProxyScreen(
 private fun appBackgroundBrush(mode: AppThemeMode): Brush = when (mode) {
     AppThemeMode.Light -> Brush.verticalGradient(listOf(Color(0xFFF4F5F8), Color(0xFFECEFF4)))
     AppThemeMode.Dark -> Brush.verticalGradient(listOf(Color(0xFF111215), Color(0xFF16181F)))
-    AppThemeMode.Aurora -> Brush.verticalGradient(listOf(Color(0xFF0F1517), Color(0xFF12191F)))
-    AppThemeMode.Sunset -> Brush.verticalGradient(listOf(Color(0xFF161214), Color(0xFF18151D)))
+    AppThemeMode.Aurora -> Brush.verticalGradient(listOf(AuroraBackground, Color(0xFF111D21)))
+    AppThemeMode.Sunset -> Brush.verticalGradient(listOf(SunsetBackground, Color(0xFF1F1622)))
 }
 
 @Composable
@@ -1288,35 +1206,26 @@ private fun BackgroundOrbs(mode: AppThemeMode) {
 @Composable
 private fun HomePage(
     text: UiStrings,
-    status: ProxyStatus,
+    statusProvider: () -> ProxyStatus,
     link: String,
-    logs: List<String>,
+    logsProvider: () -> List<String>,
     cfEnabled: Boolean,
     language: AppLanguage,
-    trafficSummary: TrafficSummary,
+    trafficProvider: () -> TrafficSummary,
     availableUpdate: UpdateInfo?,
     onOpenUpdateDialog: () -> Unit,
     webProxyEnabled: Boolean,
-    webProxyServer: String,
-    webProxySecret: String,
-    onWebProxyEnabledChange: (Boolean) -> Unit,
-    onWebProxyServerChange: (String) -> Unit,
-    onWebProxySecretChange: (String) -> Unit,
-    onPasteWebProxyLink: (String) -> Unit,
-    serviceMode: ServiceOperationMode,
-    isVpnActive: Boolean,
-    detectedAppsCount: Int,
-    onToggleMode: (ServiceOperationMode) -> Unit,
-    onToggleVpn: () -> Unit,
     onResetTraffic: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onCopyLink: () -> Unit,
     onOpenTelegram: () -> Unit,
 ) {
+    val status = statusProvider()
+    val logs = logsProvider()
+    val trafficSummary = trafficProvider()
     val stats = remember(logs) { latestStats(logs) }
     val subtitle = when {
-        serviceMode == ServiceOperationMode.VpnTunnel -> "Туннель со звонками (VPN)"
         webProxyEnabled -> "127.0.0.1:1443 · Telegram Web Proxy (tproxy-v1)"
         else -> "127.0.0.1:1443 · MTProto WS Proxy"
     }
@@ -1328,14 +1237,6 @@ private fun HomePage(
             onClick = onOpenUpdateDialog,
         )
     }
-    VpnModeCard(
-        language = language,
-        mode = serviceMode,
-        isVpnActive = isVpnActive,
-        appsCount = detectedAppsCount,
-        onModeChange = onToggleMode,
-        onToggleVpn = onToggleVpn,
-    )
     ProxyHeroCard(
         text = text,
         status = status,
@@ -1347,17 +1248,6 @@ private fun HomePage(
         onStop = onStop,
         onOpenTelegram = onOpenTelegram,
         onCopyLink = onCopyLink,
-    )
-    WebProxyCard(
-        language = language,
-        enabled = !status.isStarting,
-        webProxyEnabled = webProxyEnabled,
-        webProxyServer = webProxyServer,
-        webProxySecret = webProxySecret,
-        onWebProxyEnabledChange = onWebProxyEnabledChange,
-        onWebProxyServerChange = onWebProxyServerChange,
-        onWebProxySecretChange = onWebProxySecretChange,
-        onPasteWebProxyLink = onPasteWebProxyLink,
     )
     TrafficStatsCard(language, trafficSummary, onResetTraffic)
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1388,9 +1278,10 @@ private fun HomePage(
 @Composable
 private fun LogsPage(
     text: UiStrings,
-    logs: List<String>,
+    logsProvider: () -> List<String>,
     onDownload: () -> Unit,
 ) {
+    val logs = logsProvider()
     var category by rememberSaveable { mutableStateOf(LogCategory.General) }
     val visibleLogs = remember(logs, category) {
         if (category == LogCategory.Errors) logs.filter { " E " in it || " W " in it || "ERROR" in it || "WARN" in it } else logs
@@ -1411,7 +1302,54 @@ private fun LogsPage(
         Spacer(Modifier.size(8.dp))
         ButtonText(text.downloadLogs)
     }
-    LogsCard(text, visibleLogs)
+    Card(
+        modifier = Modifier.fillMaxSize(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            item(key = "header") {
+                Text(
+                    text.debugLog,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            if (visibleLogs.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        text.noEventsYet,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                itemsIndexed(
+                    items = visibleLogs,
+                    key = { index, line -> "$index:${line.hashCode()}" },
+                ) { _, line ->
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = when {
+                            " E " in line || "ERROR" in line -> MaterialTheme.colorScheme.error
+                            " W " in line || "WARN" in line -> SignalAmber
+                            "WS" in line -> MaterialTheme.colorScheme.primary
+                            else -> SignalMint
+                        },
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1438,7 +1376,6 @@ private fun SettingsPage(
     onCfEnabledChange: (Boolean) -> Unit,
     smartStandby: Boolean,
     onSmartStandbyChange: (Boolean) -> Unit,
-    onApplyProfile: (ProxyProfile) -> Unit,
     onOpenExport: () -> Unit,
     onOpenImport: () -> Unit,
     secret: String,
@@ -1474,7 +1411,6 @@ private fun SettingsPage(
     PresetsAndBackupCard(
         language = language,
         enabled = enabled,
-        onApplyProfile = onApplyProfile,
         onOpenExport = onOpenExport,
         onOpenImport = onOpenImport,
     )
@@ -1544,6 +1480,7 @@ private fun WebProxyCard(
 ) {
     val context = LocalContext.current
     val isRu = language == AppLanguage.Ru
+    var secretVisible by rememberSaveable { mutableStateOf(false) }
     val parsedEndpoint = remember(webProxyServer, webProxySecret) {
         WebProxyProtocol.parseEndpointInput(webProxyServer, webProxySecret)
     }
@@ -1634,9 +1571,18 @@ private fun WebProxyCard(
                 },
                 enabled = enabled,
                 singleLine = true,
+                visualTransformation = if (secretVisible) VisualTransformation.None else PasswordVisualTransformation(),
                 label = { Text(if (isRu) "Секрет Web Proxy (p... / hex / base64)" else "Web Proxy Secret (p... / hex / base64)") },
                 placeholder = { Text("pAIBAwQFBgcICQoLDA0ODxAREhM", fontFamily = FontFamily.Monospace) },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                trailingIcon = {
+                    IconButton(onClick = { secretVisible = !secretVisible }) {
+                        Icon(
+                            if (secretVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                            contentDescription = if (isRu) "Показать секрет" else "Toggle secret visibility",
+                        )
+                    }
+                },
             )
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1657,7 +1603,9 @@ private fun WebProxyCard(
                         }
                     },
                 ) {
-                    ButtonText(if (isRu) "📋 Вставить ссылку" else "📋 Paste Link")
+                    Icon(Icons.Rounded.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.size(6.dp))
+                    ButtonText(if (isRu) "Вставить ссылку" else "Paste Link")
                 }
 
                 if (parsedEndpoint != null) {
@@ -1672,7 +1620,9 @@ private fun WebProxyCard(
                             ).show()
                         },
                     ) {
-                        ButtonText(if (isRu) "🔗 Копировать t.me/webproxy" else "🔗 Copy t.me/webproxy")
+                        Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.size(6.dp))
+                        ButtonText(if (isRu) "Копировать t.me/webproxy" else "Copy t.me/webproxy")
                     }
                 }
             }
@@ -1687,24 +1637,35 @@ private fun WebProxyCard(
                         MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
                     },
                 ) {
-                    Text(
-                        when {
-                            parsedEndpoint != null -> if (isRu) {
-                                "✓ Настроен: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
-                            } else {
-                                "✓ Ready: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
-                            }
-                            else -> if (isRu) {
-                                "Укажите корректный сервер и секрет Web Proxy или вставьте ссылку https://t.me/webproxy?..."
-                            } else {
-                                "Enter a valid Web Proxy server and secret or paste a https://t.me/webproxy?... link"
-                            }
-                        },
+                    Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = if (parsedEndpoint != null) SignalMint else MaterialTheme.colorScheme.error,
-                    )
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            if (parsedEndpoint != null) Icons.Rounded.CheckCircle else Icons.Rounded.ErrorOutline,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = if (parsedEndpoint != null) SignalMint else MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            when {
+                                parsedEndpoint != null -> if (isRu) {
+                                    "Настроен: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
+                                } else {
+                                    "Ready: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
+                                }
+                                else -> if (isRu) {
+                                    "Укажите корректный сервер и секрет Web Proxy или вставьте ссылку https://t.me/webproxy?..."
+                                } else {
+                                    "Enter a valid Web Proxy server and secret or paste a https://t.me/webproxy?... link"
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (parsedEndpoint != null) SignalMint else MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
         }
@@ -1771,7 +1732,6 @@ private fun TrafficStatsCard(
 private fun PresetsAndBackupCard(
     language: AppLanguage,
     enabled: Boolean,
-    onApplyProfile: (ProxyProfile) -> Unit,
     onOpenExport: () -> Unit,
     onOpenImport: () -> Unit,
 ) {
@@ -1784,29 +1744,16 @@ private fun PresetsAndBackupCard(
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
-                if (isRu) "Готовые профили (Пресеты)" else "Quick Profiles & Presets",
+                if (isRu) "Резервная копия настроек" else "Configuration Backup",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ProxyProfile.PRESETS.forEach { profile ->
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = { onApplyProfile(profile) },
-                        enabled = enabled,
-                    ) {
-                        Text(
-                            when (profile.id) {
-                                "fast_cf" -> if (isRu) "🚀 Скорость" else "🚀 Speed"
-                                "direct_wss" -> if (isRu) "⚡ Прямой WSS" else "⚡ Direct WSS"
-                                else -> if (isRu) "🔋 Эко" else "🔋 Eco"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
+            Text(
+                if (isRu) "Экспорт и импорт настроек прокси в формате JSON или по ссылке"
+                else "Export and import proxy settings via JSON or share link",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
@@ -2111,139 +2058,6 @@ private fun PageTitle(title: String, subtitle: String) {
         Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
-
-
-
-@Composable
-private fun VpnModeCard(
-    language: AppLanguage,
-    mode: ServiceOperationMode,
-    isVpnActive: Boolean,
-    appsCount: Int,
-    onModeChange: (ServiceOperationMode) -> Unit,
-    onToggleVpn: () -> Unit,
-) {
-    val isRu = language == AppLanguage.Ru
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, if (mode == ServiceOperationMode.VpnTunnel) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    if (isRu) "Режим работы сервиса" else "Service Operation Mode",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (mode == ServiceOperationMode.VpnTunnel) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isVpnActive) SignalMint.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                    ) {
-                        Text(
-                            if (isVpnActive) (if (isRu) "🟢 VPN АКТИВЕН" else "🟢 VPN ACTIVE") else (if (isRu) "⚪ ВЫКЛЮЧЕН" else "⚪ OFF"),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isVpnActive) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ServiceOperationMode.entries.forEach { item ->
-                    val selected = mode == item
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = { onModeChange(item) },
-                        border = BorderStroke(
-                            if (selected) 2.dp else 1.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-                        ),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else Color.Transparent,
-                        ),
-                    ) {
-                        Text(
-                            when (item) {
-                                ServiceOperationMode.ProxyOnly -> if (isRu) "🚀 Только прокси" else "🚀 Proxy Only"
-                                ServiceOperationMode.VpnTunnel -> if (isRu) "🛡️ Прокси + Звонки" else "🛡️ Proxy + Calls"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
-
-            if (mode == ServiceOperationMode.VpnTunnel) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
-                ) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                if (isRu) "Туннель для Telegram и звонков" else "Tunnel for Telegram & Calls",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Text(
-                                if (isRu) "Приложений: $appsCount" else "Apps: $appsCount",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Text(
-                            if (isRu) {
-                                "Маршрутизирует весь трафик Telegram (включая P2P и UDP-звонки). Банки, браузеры и другие приложения работают напрямую без VPN."
-                            } else {
-                                "Routes all Telegram traffic (including P2P and UDP calls). Banking, browser and other apps connect directly without VPN."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                        ) {
-                            Button(
-                                onClick = onToggleVpn,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isVpnActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                ),
-                            ) {
-                                Text(
-                                    if (isVpnActive) (if (isRu) "Остановить VPN" else "Stop VPN") else (if (isRu) "Запустить VPN" else "Start VPN"),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun BuildMetadataCard(language: AppLanguage, channel: AppChannel) {
     val context = LocalContext.current
@@ -2273,13 +2087,24 @@ private fun BuildMetadataCard(language: AppLanguage, channel: AppChannel) {
                     shape = RoundedCornerShape(8.dp),
                     color = if (channel == AppChannel.Beta) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
                 ) {
-                    Text(
-                        if (channel == AppChannel.Beta) (if (isRu) "🧪 БЕТА / СНАПШОТ" else "🧪 BETA SNAPSHOT") else (if (isRu) "🟢 СТАБИЛЬНАЯ" else "🟢 STABLE"),
+                    Row(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = if (channel == AppChannel.Beta) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            if (channel == AppChannel.Beta) Icons.Rounded.Science else Icons.Rounded.Verified,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = if (channel == AppChannel.Beta) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        Text(
+                            if (channel == AppChannel.Beta) (if (isRu) "БЕТА / СНАПШОТ" else "BETA SNAPSHOT") else (if (isRu) "СТАБИЛЬНАЯ" else "STABLE"),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (channel == AppChannel.Beta) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
                 }
             }
 
@@ -2355,8 +2180,15 @@ private fun UpdateChannelCard(
                             containerColor = if (selected) (if (item == AppChannel.Beta) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)) else Color.Transparent,
                         ),
                     ) {
+                        Icon(
+                            if (item == AppChannel.Beta) Icons.Rounded.Science else Icons.Rounded.Verified,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = if (selected) (if (item == AppChannel.Beta) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.size(6.dp))
                         Text(
-                            if (item == AppChannel.Beta) (if (isRu) "🧪 Бета / Снапшот" else "🧪 Beta Snapshot") else (if (isRu) "🟢 Стабильная" else "🟢 Stable"),
+                            if (item == AppChannel.Beta) (if (isRu) "Бета / Снапшот" else "Beta Snapshot") else (if (isRu) "Стабильная" else "Stable"),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                             color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2378,7 +2210,12 @@ private fun UpdateChannelCard(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.Top,
                     ) {
-                        Text("⚠️", style = MaterialTheme.typography.titleMedium)
+                        Icon(
+                            Icons.Rounded.WarningAmber,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
                         Text(
                             if (isRu) {
                                 "Внимание: вы используете тестовый Бета-канал. Сборки могут содержать экспериментальный код и работать нестабильно. Установка на свой страх и риск!"
@@ -2396,7 +2233,9 @@ private fun UpdateChannelCard(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = onOpenArchive,
             ) {
-                ButtonText(if (isRu) "📜 Архив всех версий и откат (Rollback)" else "📜 Version Archive & Rollback")
+                Icon(Icons.Rounded.History, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(8.dp))
+                ButtonText(if (isRu) "Архив всех версий и откат (Rollback)" else "Version Archive & Rollback")
             }
         }
     }
@@ -2435,7 +2274,11 @@ private fun VersionArchiveDialog(
                     )
                 }
                 IconButton(onClick = onRefresh, enabled = !isLoading) {
-                    Text(if (isLoading) "⏳" else "🔄", style = MaterialTheme.typography.titleMedium)
+                    Icon(
+                        Icons.Rounded.Refresh,
+                        contentDescription = if (isRu) "Обновить список" else "Refresh list",
+                        tint = if (isLoading) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
         },
@@ -2444,9 +2287,10 @@ private fun VersionArchiveDialog(
                 if (isLoading && releases.isEmpty()) {
                     Column(
                         modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
+                        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(0.6f))
                         Text(if (isRu) "Загрузка версий с GitHub..." else "Loading releases from GitHub...", style = MaterialTheme.typography.bodySmall)
                     }
                 } else {
@@ -2595,8 +2439,36 @@ private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSel
                             AppThemeMode.Aurora -> if (language == AppLanguage.Ru) "Аврора" else "Aurora"
                             AppThemeMode.Sunset -> if (language == AppLanguage.Ru) "Закат" else "Sunset"
                         }
-                        if (selected == mode) Button(modifier = Modifier.weight(1f), onClick = { onSelect(mode) }) { ButtonText(label) }
-                        else OutlinedButton(modifier = Modifier.weight(1f), onClick = { onSelect(mode) }) { ButtonText(label) }
+                        val swatchColor = when (mode) {
+                            AppThemeMode.Light -> LightPrimary
+                            AppThemeMode.Dark -> DarkPrimary
+                            AppThemeMode.Aurora -> AuroraPrimary
+                            AppThemeMode.Sunset -> SunsetPrimary
+                        }
+                        val isSelected = selected == mode
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = { onSelect(mode) },
+                            border = BorderStroke(
+                                if (isSelected) 2.dp else 1.dp,
+                                if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent,
+                            ),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(swatchColor),
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            ButtonText(
+                                label,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -2845,8 +2717,14 @@ private fun UpdateBannerCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    Icon(
+                        Icons.Rounded.SystemUpdate,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                     Text(
-                        if (isRu) "🚀 Доступно обновление v${update.version}" else "🚀 Update v${update.version} available",
+                        if (isRu) "Доступно обновление v${update.version}" else "Update v${update.version} available",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -2911,13 +2789,24 @@ private fun UpdateAvailableDialog(
                         shape = RoundedCornerShape(8.dp),
                         color = if (update.isPrerelease) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
                     ) {
-                        Text(
-                            if (update.isPrerelease) (if (isRu) "🧪 БЕТА" else "🧪 BETA") else (if (isRu) "🟢 РЕЛИЗ" else "🟢 RELEASE"),
+                        Row(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = if (update.isPrerelease) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (update.isPrerelease) Icons.Rounded.Science else Icons.Rounded.Verified,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = if (update.isPrerelease) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                            Text(
+                                if (update.isPrerelease) (if (isRu) "БЕТА" else "BETA") else (if (isRu) "РЕЛИЗ" else "RELEASE"),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (update.isPrerelease) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
                     }
                 }
                 Surface(
@@ -2978,16 +2867,27 @@ private fun UpdateAvailableDialog(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
                 ) {
-                    Text(
-                        if (isRu) {
-                            "✨ Все настройки и секреты сохранятся. После установки приложение и прокси перезапустятся автоматически."
-                        } else {
-                            "✨ All settings and secrets are preserved. The app and proxy will restart automatically after installation."
-                        },
+                    Row(
                         modifier = Modifier.padding(10.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Icon(
+                            Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            if (isRu) {
+                                "Все настройки и секреты сохранятся. После установки приложение и прокси перезапустятся автоматически."
+                            } else {
+                                "All settings and secrets are preserved. The app and proxy will restart automatically after installation."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 if (busy) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -3007,7 +2907,9 @@ private fun UpdateAvailableDialog(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = onDownloadInBrowser,
                 ) {
-                    ButtonText(if (isRu) "🌐 Скачать APK напрямую через браузер" else "🌐 Download APK in Browser")
+                    Icon(Icons.Rounded.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.size(8.dp))
+                    ButtonText(if (isRu) "Скачать APK напрямую через браузер" else "Download APK in Browser")
                 }
             }
         },
@@ -3543,6 +3445,7 @@ private fun SettingsCard(
     secret: String,
     onCopySecret: () -> Unit,
 ) {
+    var secretVisible by rememberSaveable { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -3557,10 +3460,20 @@ private fun SettingsCard(
                 onValueChange = {},
                 readOnly = true,
                 singleLine = true,
+                visualTransformation = if (secretVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                 label = { Text(text.secret) },
                 trailingIcon = {
-                    IconButton(onClick = onCopySecret) {
-                        Icon(Icons.Rounded.ContentCopy, contentDescription = text.copyTelegramLink)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { secretVisible = !secretVisible }) {
+                            Icon(
+                                if (secretVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                contentDescription = text.secret,
+                            )
+                        }
+                        IconButton(onClick = onCopySecret) {
+                            Icon(Icons.Rounded.ContentCopy, contentDescription = text.copyTelegramLink)
+                        }
                     }
                 },
             )

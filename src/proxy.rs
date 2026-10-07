@@ -282,14 +282,24 @@ impl WsPool {
     }
 
     pub async fn close_all(&self) {
-        let map = self.slots.lock().await;
-        for s in map.values() {
-            let mut q = s.queue.lock().await;
-            for e in q.drain(..) {
-                tokio::spawn(async move {
-                    e.ws.close().await;
-                });
+        let mut handles = Vec::new();
+        {
+            let map = self.slots.lock().await;
+            for s in map.values() {
+                let mut q = s.queue.lock().await;
+                for e in q.drain(..) {
+                    handles.push(tokio::spawn(async move {
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_millis(500),
+                            e.ws.close(),
+                        )
+                        .await;
+                    }));
+                }
             }
+        }
+        for h in handles {
+            let _ = h.await;
         }
     }
 }

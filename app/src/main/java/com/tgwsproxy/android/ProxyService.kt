@@ -174,7 +174,8 @@ class ProxyService : Service() {
                 ProxyLogger.i("Parameters changed while running -> hot restarting proxy core")
                 ProxyServiceStatus.isStarting = true
                 serviceScope.launch {
-                    stopNativeProxy()
+                    val stopped = stopNativeProxy()
+                    withTimeoutOrNull(3000) { stopped.await() }
                     resolveSecretAndStart(
                         providedSecret,
                         cfDomain,
@@ -306,6 +307,7 @@ class ProxyService : Service() {
     ) {
         nativeRunning.set(true)
         nativeInitializing.set(false)
+        serviceScope.cancel()
         serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         startTime = System.currentTimeMillis()
         lastPing = -1
@@ -540,10 +542,13 @@ class ProxyService : Service() {
         }
     }
 
-    private fun stopNativeProxy() {
-        if (!nativeRunning.getAndSet(false)) return
-        ProxyLogger.i("Stopping proxy core")
+    private fun stopNativeProxy(): CompletableDeferred<Unit> {
         val completed = CompletableDeferred<Unit>()
+        if (!nativeRunning.getAndSet(false)) {
+            completed.complete(Unit)
+            return completed
+        }
+        ProxyLogger.i("Stopping proxy core")
         Thread({
             try {
                 synchronized(nativeCallLock) {
@@ -563,6 +568,7 @@ class ProxyService : Service() {
             withTimeoutOrNull(3000) { completed.await() }
             ProxyLogger.i("Proxy core stopped")
         }
+        return completed
     }
 
     private fun compactStats(stats: String): String {
@@ -589,6 +595,9 @@ class ProxyService : Service() {
         val routeFailureDelta = (routeFailures - lastRouteFailures).coerceAtLeast(0)
         val wsAttemptDelta = (wsAttempts - lastWsAttemptFailures).coerceAtLeast(0)
         val downProgress = downBytes > lastDownBytes
+        if (downProgress) {
+            lastTrafficActiveAtMs = System.currentTimeMillis()
+        }
 
         if (routeFailureDelta > 0) {
             val nativeReason = runCatching {
