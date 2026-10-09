@@ -81,7 +81,7 @@ jobs:
         run: |
           chmod +x gradlew
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            ./gradlew assembleRelease --build-cache --parallel -x lint -x lintVitalRelease --stacktrace
+            ./gradlew assembleRelease --build-cache --parallel -x lint --stacktrace
           else
             ./gradlew testDebugUnitTest assembleDebug --build-cache --parallel -x lint --stacktrace
           fi
