@@ -782,7 +782,18 @@
       background: var(--bg-surface);
       border: 1px solid var(--border-subtle);
       border-radius: 18px;
-      overflow: hidden;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    code {
+      word-break: break-word;
+    }
+
+    .hero-grid > *,
+    .promo-grid > *,
+    .pipeline-grid > * {
+      min-width: 0;
     }
 
     table.comp-table {
@@ -817,67 +828,10 @@
       color: #F87171;
     }
 
-    /* Security Audit Bento Grid */
-    .bento-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 18px;
-    }
-
-    .bento-card {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: 18px;
-      padding: 24px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-
-    .bento-card.wide {
-      grid-column: span 2;
-    }
-
-    .bento-icon {
-      width: 40px;
-      height: 40px;
-      border-radius: 10px;
-      background: var(--accent-tg-soft);
-      color: var(--accent-tg);
-      display: grid;
-      place-items: center;
-      margin-bottom: 16px;
-      font-family: var(--font-mono);
-      font-weight: 700;
-    }
-
-    .bento-card h3 {
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-
-    .bento-card p {
-      font-size: 14px;
-      color: var(--text-secondary);
-      margin-bottom: 14px;
-    }
-
-    .code-snippet {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      background: var(--bg-base);
-      border: 1px solid var(--border-subtle);
-      padding: 10px 12px;
-      border-radius: 10px;
-      color: #93C5FD;
-      overflow-x: auto;
-    }
-
-    /* Promo & Share Kit for Growth */
+    /* Live Stats Grid */
     .promo-grid {
       display: grid;
-      grid-template-columns: 1.2fr 0.8fr;
+      grid-template-columns: 1fr 1.15fr;
       gap: 24px;
     }
 
@@ -886,21 +840,6 @@
       border: 1px solid var(--border-subtle);
       border-radius: 18px;
       padding: 24px;
-    }
-
-    .promo-textarea {
-      width: 100%;
-      min-height: 155px;
-      background: var(--bg-base);
-      border: 1px solid var(--border-subtle);
-      border-radius: 12px;
-      padding: 14px;
-      color: var(--text-primary);
-      font-family: var(--font-sans);
-      font-size: 13.5px;
-      line-height: 1.5;
-      resize: vertical;
-      margin: 12px 0;
     }
 
     .views-widget-large {
@@ -915,7 +854,7 @@
 
     .big-counter-num {
       font-family: var(--font-mono);
-      font-size: 42px;
+      font-size: clamp(32px, 7vw, 42px);
       font-weight: 800;
       color: var(--accent-ok);
       letter-spacing: -0.03em;
@@ -935,8 +874,46 @@
     .counter-meta-list li {
       display: flex;
       justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
       border-bottom: 1px dashed var(--border-subtle);
       padding-bottom: 6px;
+    }
+
+    .counter-meta-list li strong {
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    /* Mobile quick-jump navigation strip */
+    .mobile-nav-strip {
+      display: none;
+      border-top: 1px solid var(--border-subtle);
+      padding: 8px 0;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+
+    .mobile-nav-strip::-webkit-scrollbar {
+      display: none;
+    }
+
+    .mobile-nav-inner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .mobile-nav-pill {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      padding: 5px 12px;
+      border-radius: 99px;
     }
 
     footer {
@@ -981,34 +958,226 @@
       .hero-grid,
       .promo-grid {
         grid-template-columns: 1fr;
+        gap: 32px;
       }
       .pipeline-grid {
         grid-template-columns: 1fr 1fr;
       }
-      .bento-grid {
-        grid-template-columns: 1fr;
-      }
-      .bento-card.wide {
-        grid-column: span 1;
-      }
       .nav-links {
         display: none;
       }
+      .mobile-nav-strip {
+        display: block;
+      }
     }
 
-    @media (max-width: 600px) {
-      .pipeline-grid,
+    @media (max-width: 640px) {
+      .container {
+        padding: 0 16px;
+      }
+      .hide-on-mobile {
+        display: none !important;
+      }
+      .telemetry-bar {
+        font-size: 11px;
+        padding: 6px 0;
+      }
+      .telemetry-inner {
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .telemetry-group {
+        gap: 12px;
+        width: 100%;
+        justify-content: space-between;
+      }
+      .navbar-inner {
+        height: 58px;
+        gap: 8px;
+      }
+      .brand {
+        font-size: 15.5px;
+        gap: 8px;
+      }
+      .brand-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+      }
+      .brand-version {
+        font-size: 10.5px;
+        padding: 2px 6px;
+      }
+      .nav-actions .btn {
+        padding: 8px 13px;
+        font-size: 12.5px;
+        border-radius: 10px;
+      }
+      .hero {
+        padding: 24px 0 44px;
+      }
+      .eyebrow-pill {
+        font-size: 11.5px;
+        padding: 5px 11px;
+        margin-bottom: 14px;
+      }
+      .hero h1 {
+        font-size: clamp(26px, 7.2vw, 34px);
+        line-height: 1.12;
+        margin-bottom: 14px;
+      }
+      .hero-lead {
+        font-size: 15px;
+        margin-bottom: 20px;
+      }
+      .hero-cta-row {
+        flex-direction: column;
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+      .hero-cta-row .btn {
+        width: 100%;
+        padding: 13px 18px;
+        font-size: 14.5px;
+      }
       .views-card-strip {
         grid-template-columns: 1fr;
+        gap: 10px;
+        padding: 14px;
       }
       .stat-cell {
         border-right: none;
         border-bottom: 1px solid var(--border-subtle);
-        padding-bottom: 10px;
+        padding: 2px 4px 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 4px 10px;
       }
       .stat-cell:last-child {
         border-bottom: none;
         padding-bottom: 0;
+      }
+      .stat-label {
+        margin-bottom: 0;
+      }
+      .stat-num {
+        font-size: 19px;
+      }
+      .stat-sub {
+        width: 100%;
+        margin-top: 0;
+      }
+      .phone-frame-wrap {
+        width: 100%;
+      }
+      .theme-switcher-bar {
+        width: 100%;
+        max-width: 370px;
+        justify-content: space-between;
+        gap: 4px;
+        padding: 4px;
+      }
+      .theme-chip {
+        flex: 1;
+        text-align: center;
+        padding: 6px 6px;
+        font-size: 11.5px;
+      }
+      .phone-mockup {
+        max-width: 100%;
+        border-width: 4px;
+        border-radius: 26px;
+      }
+      .phone-body {
+        min-height: 440px;
+        padding: 10px 13px 12px;
+      }
+      section {
+        padding: 44px 0;
+      }
+      .section-header {
+        margin-bottom: 26px;
+      }
+      .section-title {
+        font-size: 23px;
+      }
+      .section-desc {
+        font-size: 14.5px;
+      }
+      .pipeline-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      .pipeline-step {
+        padding: 16px;
+      }
+      /* Stack VPN comparison table into mobile cards */
+      .vpn-comp-table thead {
+        display: none;
+      }
+      .vpn-comp-table,
+      .vpn-comp-table tbody,
+      .vpn-comp-table tr,
+      .vpn-comp-table td {
+        display: block;
+        width: 100%;
+      }
+      .vpn-comp-table tr {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+      .vpn-comp-table tr:last-child {
+        border-bottom: none;
+      }
+      .vpn-comp-table td {
+        padding: 4px 0;
+        border-bottom: none;
+        font-size: 13.5px;
+      }
+      .vpn-comp-table td:first-child {
+        font-size: 14.5px;
+        margin-bottom: 6px;
+        color: var(--text-primary);
+      }
+      .vpn-comp-table td[data-label]::before {
+        content: attr(data-label) ": ";
+        font-weight: 700;
+        color: var(--text-secondary);
+        font-size: 12px;
+        display: block;
+        margin-bottom: 1px;
+      }
+      .views-widget-large,
+      .promo-card {
+        padding: 18px 16px;
+        border-radius: 16px;
+      }
+      .counter-meta-list {
+        font-size: 12.5px;
+      }
+      .toast {
+        left: 16px;
+        right: 16px;
+        bottom: 16px;
+        text-align: center;
+      }
+      .footer-inner {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .col-apk-size {
+        display: none;
+      }
+      .comp-table th,
+      .comp-table td {
+        padding: 9px 10px;
+        font-size: 12px;
       }
     }
   </style>
@@ -1021,7 +1190,7 @@
       <div class="telemetry-group">
         <span class="telemetry-item">
           <span class="pulse-dot"></span>
-          <span>ПРОСМОТРЫ САЙТА:</span>
+          <span>ПРОСМОТРЫ:</span>
           <strong class="telemetry-value" id="top-site-views">—</strong>
           <span class="telemetry-badge" id="visit-status-badge">+1 ваш визит</span>
         </span>
@@ -1029,12 +1198,12 @@
           <span>СКАЧИВАНИЯ APK:</span>
           <strong class="telemetry-value" id="top-apk-downloads">—</strong>
         </span>
-        <span class="telemetry-item">
+        <span class="telemetry-item hide-on-mobile">
           <span>GITHUB STARS:</span>
           <strong class="telemetry-value" id="top-gh-stars">—</strong>
         </span>
       </div>
-      <div class="telemetry-group">
+      <div class="telemetry-group hide-on-mobile">
         <span class="telemetry-item">
           <span>ЯДРО:</span>
           <strong class="telemetry-value">Rust 2021 (libtgwsproxy.so • tokio + rustls)</strong>
@@ -1048,7 +1217,7 @@
     <div class="container navbar-inner">
       <a href="#" class="brand">
         <div class="brand-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 2L11 13"></path>
             <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
           </svg>
@@ -1064,12 +1233,20 @@
       </nav>
 
       <div class="nav-actions">
-        <a href="https://github.com/wqeww0001/TgwsProxyAndroid" target="_blank" rel="noopener" class="btn btn-secondary">
+        <a href="https://github.com/wqeww0001/TgwsProxyAndroid" target="_blank" rel="noopener" class="btn btn-secondary hide-on-mobile">
           GitHub
         </a>
         <a href="https://github.com/wqeww0001/TgwsProxyAndroid/releases/latest" target="_blank" rel="noopener" class="btn btn-primary" id="nav-download-btn">
           Скачать APK
         </a>
+      </div>
+    </div>
+    <div class="mobile-nav-strip">
+      <div class="container mobile-nav-inner">
+        <a href="#app-simulator" class="mobile-nav-pill">Симулятор UI</a>
+        <a href="#how-it-works" class="mobile-nav-pill">Как устроен</a>
+        <a href="#vs-vpn" class="mobile-nav-pill">Почему не VPN</a>
+        <a href="#stats" class="mobile-nav-pill">Живая статистика</a>
       </div>
     </div>
   </header>
@@ -1357,7 +1534,7 @@
         </div>
 
         <div class="comparison-wrap">
-          <table class="comp-table">
+          <table class="comp-table vpn-comp-table">
             <thead>
               <tr>
                 <th>Параметр</th>
@@ -1368,23 +1545,23 @@
             <tbody>
               <tr>
                 <td><strong>Банковские приложения, Госуслуги, такси</strong></td>
-                <td class="good-val">Работают напрямую без помех (VPN-слот свободен)</td>
-                <td class="bad-val">Часто блокируют вход из-за чужого IP</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">Работают напрямую без помех (VPN-слот свободен)</td>
+                <td class="bad-val" data-label="Обычный VPN">Часто блокируют вход из-за чужого IP</td>
               </tr>
               <tr>
                 <td><strong>Расход заряда батареи</strong></td>
-                <td class="good-val">Минимальный (~0% при выключенном экране со Smart Standby)</td>
-                <td class="bad-val">Постоянный перехват пакетов всех приложений (TUN/TAP)</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">Минимальный (~0% при выключенном экране со Smart Standby)</td>
+                <td class="bad-val" data-label="Обычный VPN">Постоянный перехват пакетов всех приложений (TUN/TAP)</td>
               </tr>
               <tr>
                 <td><strong>Сбор трафика и приватность</strong></td>
-                <td class="good-val">100% локально на 127.0.0.1:1443 (исходный код открыт, GPLv3)</td>
-                <td class="bad-val">Весь DNS и трафик проходит через чужой сервер</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">100% локально на 127.0.0.1:1443 (исходный код открыт, GPLv3)</td>
+                <td class="bad-val" data-label="Обычный VPN">Весь DNS и трафик проходит через чужой сервер</td>
               </tr>
               <tr>
                 <td><strong>Каскадная отказоустойчивость</strong></td>
-                <td class="good-val">Cloudflare CDN + прямой WSS к DC + прямой TCP fallback</td>
-                <td class="bad-val">Один сервер, легко блокируется по IP/сигнатуре</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">Cloudflare CDN + прямой WSS к DC + прямой TCP fallback</td>
+                <td class="bad-val" data-label="Обычный VPN">Один сервер, легко блокируется по IP/сигнатуре</td>
               </tr>
             </tbody>
           </table>
@@ -1469,7 +1646,7 @@
                     <tr>
                       <th style="padding: 10px 14px;">Версия</th>
                       <th style="padding: 10px 14px;">Дата</th>
-                      <th style="padding: 10px 14px;">Размер APK</th>
+                      <th class="col-apk-size" style="padding: 10px 14px;">Размер APK</th>
                       <th style="padding: 10px 14px; text-align: right;">Скачиваний</th>
                     </tr>
                   </thead>
@@ -1646,7 +1823,7 @@
                       <a href="${apkUrl}" target="_blank" rel="noopener" style="color: var(--accent-tg);">${rel.tag_name}</a>
                     </td>
                     <td style="padding: 10px 14px; color: var(--text-secondary);">${dateStr}</td>
-                    <td style="padding: 10px 14px; font-family: var(--font-mono); color: var(--text-secondary);">${sizeStr}</td>
+                    <td class="col-apk-size" style="padding: 10px 14px; font-family: var(--font-mono); color: var(--text-secondary);">${sizeStr}</td>
                     <td style="padding: 10px 14px; text-align: right; font-family: var(--font-mono); font-weight: 700; color: var(--accent-ok);">
                       ${formatNum(relDownloads)}
                     </td>
