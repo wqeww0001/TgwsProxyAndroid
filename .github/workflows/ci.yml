@@ -35,7 +35,9 @@ jobs:
           cache-all-crates: true
 
       - name: Install prebuilt cargo-ndk
-        uses: taiki-e/install-action@cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
 
       - name: Install Android SDK packages
         run: |
