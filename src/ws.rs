@@ -1,5 +1,5 @@
 use crate::config::*;
-use crate::crypto::xor_mask_in_place;
+use crate::crypto::{websocket_accept_key, xor_mask_in_place};
 use crate::ldebug;
 use base64::Engine;
 use byteorder::{BigEndian, ByteOrder};
@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
@@ -20,6 +20,7 @@ use tokio_rustls::TlsConnector;
 // WS opcodes
 // ---------------------------------------------------------------------------
 
+pub const OP_CONTINUATION: u8 = 0x0;
 pub const OP_TEXT: u8 = 0x1;
 pub const OP_BINARY: u8 = 0x2;
 pub const OP_CLOSE: u8 = 0x8;
@@ -186,46 +187,6 @@ impl RawWebSocket {
         }
     }
 
-    // Recv обрабатывает контрольные фреймы (как Go Recv)
-    pub async fn recv(&self) -> Result<Vec<u8>, WsError> {
-        while !self.is_closed() {
-            let (opcode, payload) = match self.read_frame().await {
-                Ok(v) => v,
-                Err(e) => {
-                    self.closed.store(true, Ordering::Relaxed);
-                    return Err(e);
-                }
-            };
-            match opcode {
-                OP_CLOSE => {
-                    self.closed.store(true, Ordering::Relaxed);
-                    let mut close_payload = payload;
-                    if close_payload.len() > 2 {
-                        close_payload.truncate(2);
-                    }
-                    let reply = build_frame(OP_CLOSE, &close_payload, true);
-                    let _ = self.write_frame(&reply, WS_CONTROL_TIMEOUT).await;
-                    return Err(WsError::Io(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "EOF",
-                    )));
-                }
-                OP_PING => {
-                    let pong = build_frame(OP_PONG, &payload, true);
-                    let _ = self.write_frame(&pong, WS_CONTROL_TIMEOUT).await;
-                    continue;
-                }
-                OP_PONG => continue,
-                OP_TEXT | OP_BINARY => return Ok(payload),
-                _ => {}
-            }
-        }
-        Err(WsError::Io(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "EOF",
-        )))
-    }
-
     pub async fn close(&self) {
         if self.closed.swap(true, Ordering::Relaxed) {
             return;
@@ -240,6 +201,7 @@ impl RawWebSocket {
     // удержанием lock, чтобы НЕ дропать future посреди read_exact (иначе
     // теряются уже прочитанные байты BufReader → рассинхрон потока).
     pub async fn recv_with_timeout(&self, dur: Duration) -> Result<Vec<u8>, WsError> {
+        let mut message_buf: Option<Vec<u8>> = None;
         loop {
             if self.is_closed() {
                 return Err(WsError::Io(std::io::Error::new(
@@ -247,7 +209,7 @@ impl RawWebSocket {
                     "EOF",
                 )));
             }
-            let frame = {
+            let (fin, opcode, payload) = {
                 let mut reader = self.reader.lock().await;
                 match tokio::time::timeout(dur, read_frame_locked(&mut reader)).await {
                     Ok(Ok(v)) => v,
@@ -258,7 +220,6 @@ impl RawWebSocket {
                     Err(_) => return Err(WsError::Timeout),
                 }
             };
-            let (opcode, payload) = frame;
             match opcode {
                 OP_CLOSE => {
                     self.closed.store(true, Ordering::Relaxed);
@@ -279,47 +240,49 @@ impl RawWebSocket {
                     continue;
                 }
                 OP_PONG => continue,
-                OP_TEXT | OP_BINARY => return Ok(payload),
-                _ => continue,
+                OP_TEXT | OP_BINARY => {
+                    if message_buf.is_some() {
+                        self.closed.store(true, Ordering::Relaxed);
+                        return Err(WsError::Other(
+                            "unexpected data frame while fragmented message is in progress"
+                                .to_string(),
+                        ));
+                    }
+                    if fin {
+                        return Ok(payload);
+                    }
+                    message_buf = Some(payload);
+                }
+                OP_CONTINUATION => {
+                    let Some(mut acc) = message_buf.take() else {
+                        self.closed.store(true, Ordering::Relaxed);
+                        return Err(WsError::Other(
+                            "unexpected WebSocket continuation frame".to_string(),
+                        ));
+                    };
+                    if (acc.len() as u64).saturating_add(payload.len() as u64)
+                        > MAX_WS_FRAME_PAYLOAD
+                    {
+                        self.closed.store(true, Ordering::Relaxed);
+                        return Err(WsError::Other(
+                            "fragmented WebSocket message exceeds limit".to_string(),
+                        ));
+                    }
+                    acc.extend_from_slice(&payload);
+                    if fin {
+                        return Ok(acc);
+                    }
+                    message_buf = Some(acc);
+                }
+                _ => {
+                    self.closed.store(true, Ordering::Relaxed);
+                    return Err(WsError::Other(format!(
+                        "unsupported WebSocket opcode: {}",
+                        opcode
+                    )));
+                }
             }
         }
-    }
-
-    async fn read_frame(&self) -> Result<(u8, Vec<u8>), WsError> {
-        let mut reader = self.reader.lock().await;
-        let mut hdr = [0u8; 2];
-        reader.read_exact(&mut hdr).await?;
-
-        let opcode = hdr[0] & 0x0F;
-        let mut length = (hdr[1] & 0x7F) as u64;
-
-        if length == 126 {
-            let mut buf = [0u8; 2];
-            reader.read_exact(&mut buf).await?;
-            length = BigEndian::read_u16(&buf) as u64;
-        } else if length == 127 {
-            let mut buf = [0u8; 8];
-            reader.read_exact(&mut buf).await?;
-            length = BigEndian::read_u64(&buf);
-        }
-
-        let has_mask = (hdr[1] & 0x80) != 0;
-        let mut mask_key = [0u8; 4];
-        if has_mask {
-            reader.read_exact(&mut mask_key).await?;
-        }
-
-        if length > MAX_WS_FRAME_PAYLOAD {
-            return Err(WsError::Other(format!("frame too large: {} bytes", length)));
-        }
-        let mut payload = vec![0u8; length as usize];
-        if length > 0 {
-            reader.read_exact(&mut payload).await?;
-        }
-        if has_mask {
-            xor_mask_in_place(&mut payload, &mask_key);
-        }
-        Ok((opcode, payload))
     }
 }
 
@@ -327,12 +290,23 @@ impl RawWebSocket {
 // Используется recv_with_timeout, чтобы держать lock на всё время чтения фрейма.
 async fn read_frame_locked(
     reader: &mut BufReader<tokio::io::ReadHalf<TlsStream<TcpStream>>>,
-) -> Result<(u8, Vec<u8>), WsError> {
+) -> Result<(bool, u8, Vec<u8>), WsError> {
     let mut hdr = [0u8; 2];
     reader.read_exact(&mut hdr).await?;
 
+    let fin = (hdr[0] & 0x80) != 0;
+    let rsv = hdr[0] & 0x70;
+    if rsv != 0 {
+        return Err(WsError::Other(format!("non-zero WebSocket RSV bits: {:#x}", rsv)));
+    }
     let opcode = hdr[0] & 0x0F;
     let mut length = (hdr[1] & 0x7F) as u64;
+
+    if (opcode & 0x08) != 0 && (!fin || length > 125) {
+        return Err(WsError::Other(
+            "invalid WebSocket control frame (fragmented or >125 bytes)".to_string(),
+        ));
+    }
 
     if length == 126 {
         let mut buf = [0u8; 2];
@@ -360,7 +334,7 @@ async fn read_frame_locked(
     if has_mask {
         xor_mask_in_place(&mut payload, &mask_key);
     }
-    Ok((opcode, payload))
+    Ok((fin, opcode, payload))
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +420,7 @@ fn set_sock_opts(stream: &TcpStream) {
 }
 
 pub fn ws_connect_timeout(timeout: f64) -> Duration {
-    if timeout <= 0.0 {
+    if !timeout.is_finite() || timeout <= 0.0 {
         Duration::from_secs(5)
     } else {
         Duration::from_secs_f64(timeout)
@@ -475,11 +449,16 @@ pub async fn ws_connect_once(
     path: &str,
     timeout: Duration,
 ) -> Result<RawWebSocket, WsError> {
+    let dial_addr = dial_addr.trim();
     if dial_addr.is_empty() {
         return Err(WsError::Other("empty dial address".to_string()));
     }
 
-    let target_addr = format!("{}:443", dial_addr);
+    let target_addr = if dial_addr.contains(':') && !dial_addr.starts_with('[') {
+        format!("[{}]:443", dial_addr)
+    } else {
+        format!("{}:443", dial_addr)
+    };
 
     let raw_conn = match tokio::time::timeout(timeout, TcpStream::connect(&target_addr)).await {
         Ok(Ok(c)) => c,
@@ -573,14 +552,6 @@ pub async fn ws_connect_once(
         status_code = parts[1].parse::<i32>().unwrap_or(0);
     }
 
-    if status_code == 101 {
-        return Ok(RawWebSocket {
-            reader: tokio::sync::Mutex::new(bufreader),
-            writer: tokio::sync::Mutex::new(write_half),
-            closed: AtomicBool::new(false),
-        });
-    }
-
     let mut headers = HashMap::new();
     for hl in &response_lines[1..] {
         if let Some(idx) = hl.find(':') {
@@ -590,6 +561,25 @@ pub async fn ws_connect_once(
             );
         }
     }
+
+    if status_code == 101 {
+        let expected_accept = websocket_accept_key(&ws_key);
+        let actual_accept = headers
+            .get("sec-websocket-accept")
+            .map(|s| s.trim())
+            .unwrap_or("");
+        if actual_accept != expected_accept {
+            return Err(WsError::Other(
+                "invalid Sec-WebSocket-Accept header".to_string(),
+            ));
+        }
+        return Ok(RawWebSocket {
+            reader: tokio::sync::Mutex::new(bufreader),
+            writer: tokio::sync::Mutex::new(write_half),
+            closed: AtomicBool::new(false),
+        });
+    }
+
     let location = headers.get("location").cloned().unwrap_or_default();
     Err(WsError::Handshake(WsHandshakeError {
         status_code,
@@ -599,24 +589,17 @@ pub async fn ws_connect_once(
     }))
 }
 
-async fn read_line<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<String, WsError> {
+async fn read_line<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<String, WsError> {
     let mut buf = Vec::with_capacity(128);
-    let mut byte = [0u8; 1];
-    loop {
-        let n = reader.read(&mut byte).await?;
-        if n == 0 {
-            return Err(WsError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "EOF",
-            )));
-        }
-        buf.push(byte[0]);
-        if byte[0] == b'\n' {
-            break;
-        }
-        if buf.len() > 16384 {
-            return Err(WsError::Other("header line too long".to_string()));
-        }
+    let n = reader.read_until(b'\n', &mut buf).await?;
+    if n == 0 {
+        return Err(WsError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "EOF",
+        )));
+    }
+    if buf.len() > 16384 {
+        return Err(WsError::Other("header line too long".to_string()));
     }
     Ok(String::from_utf8_lossy(&buf).to_string())
 }

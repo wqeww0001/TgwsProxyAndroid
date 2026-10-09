@@ -25,12 +25,15 @@ class ProxyTileService : TileService() {
             return
         }
 
+        val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
+        val isRu = (prefs.getString("ui_language", "ru") ?: "ru") == "ru"
+
         val tile = qsTile
         if (isRunning) {
             if (tile != null) {
                 tile.state = Tile.STATE_INACTIVE
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "Остановка..."
+                    tile.subtitle = if (isRu) "Остановка..." else "Stopping..."
                 }
                 tile.updateTile()
             }
@@ -42,21 +45,18 @@ class ProxyTileService : TileService() {
             if (tile != null) {
                 tile.state = Tile.STATE_ACTIVE
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "Запуск..."
+                    tile.subtitle = if (isRu) "Запуск..." else "Starting..."
                 }
                 tile.updateTile()
             }
 
-            val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
             val cleanSecret = SecureSecretStore.getOrCreate(this)
             val cfWorkerDomain = prefs.getString(ProxyService.EXTRA_CF_WORKER_DOMAIN, "") ?: ""
             val cfEnabled = prefs.getBoolean(ProxyService.EXTRA_CF_ENABLED, true)
+            val cfPriority = prefs.getBoolean(ProxyService.EXTRA_CF_PRIORITY, true)
             val smartStandby = prefs.getBoolean(ProxyService.EXTRA_SMART_STANDBY, true)
             val poolSize = prefs.getString(ProxyService.EXTRA_POOL_SIZE, "4")?.toIntOrNull() ?: 4
             val dcIps = prefs.getString(ProxyService.EXTRA_DC_IPS, "") ?: ""
-            val webProxyEnabled = prefs.getBoolean(ProxyService.EXTRA_WEB_PROXY_ENABLED, false)
-            val webProxyServer = prefs.getString(ProxyService.EXTRA_WEB_PROXY_SERVER, "") ?: ""
-            val webProxySecret = prefs.getString(ProxyService.EXTRA_WEB_PROXY_SECRET, "") ?: ""
 
             val cleanCfDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
 
@@ -64,13 +64,11 @@ class ProxyTileService : TileService() {
                 putExtra(ProxyService.EXTRA_SECRET, cleanSecret)
                 putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanCfDomain)
                 putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+                putExtra(ProxyService.EXTRA_CF_PRIORITY, cfPriority)
                 putExtra(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
                 putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
                 putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcIps))
                 putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanCfDomain)
-                putExtra(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
-                putExtra(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                putExtra(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -87,29 +85,29 @@ class ProxyTileService : TileService() {
         val tile = qsTile ?: return
         val isRunning = ProxyServiceStatus.isRunning
         val isStarting = ProxyServiceStatus.isStarting
+        val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
+        val isRu = (prefs.getString("ui_language", "ru") ?: "ru") == "ru"
 
         when {
             isRunning -> {
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
-                    val isWebProxy = prefs.getBoolean(ProxyService.EXTRA_WEB_PROXY_ENABLED, false)
-                    tile.subtitle = if (isWebProxy) "Web Proxy · ${ProxyConfig.PORT}" else "${ProxyConfig.HOST}:${ProxyConfig.PORT}"
+                    tile.subtitle = "${ProxyConfig.HOST}:${ProxyConfig.PORT}"
                 }
             }
             isStarting -> {
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "Запуск..."
+                    tile.subtitle = if (isRu) "Запуск..." else "Starting..."
                 }
             }
             else -> {
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "Остановлен"
+                    tile.subtitle = if (isRu) "Остановлен" else "Stopped"
                 }
             }
         }

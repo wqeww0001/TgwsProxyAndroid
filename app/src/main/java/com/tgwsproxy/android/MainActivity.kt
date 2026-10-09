@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -14,6 +15,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PersistableBundle
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
@@ -138,8 +140,6 @@ import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
 import com.tgwsproxy.android.traffic.TrafficSummary
 import com.tgwsproxy.android.ui.theme.*
-import com.tgwsproxy.android.webproxy.WebProxyEngine
-import com.tgwsproxy.android.webproxy.WebProxyProtocol
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -157,17 +157,15 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         requestNotificationPermission()
         requestStoragePermission()
-        intent?.dataString?.let { dataUrl ->
-            WebProxyProtocol.parseWebProxyLink(dataUrl)?.let { endpoint ->
-                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
-                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, endpoint.serverField)
-                saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, endpoint.displaySecret)
-                Toast.makeText(this, "Web Proxy: ${endpoint.serverField}", Toast.LENGTH_SHORT).show()
-            }
-        }
         if (intent?.getBooleanExtra("updated_just_now", false) == true) {
             intent?.removeExtra("updated_just_now")
-            Toast.makeText(this, "Обновлено до v${UpdateChecker.currentVersion(this)}", Toast.LENGTH_SHORT).show()
+            val isRu = getProxyPref(LANGUAGE_PREF, AppLanguage.Ru.code) != AppLanguage.En.code
+            val msg = if (isRu) {
+                "Обновлено до v${UpdateChecker.currentVersion(this)}"
+            } else {
+                "Updated to v${UpdateChecker.currentVersion(this)}"
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
         setContent {
             val context = LocalContext.current
@@ -451,15 +449,13 @@ private fun ProxyScreen(
     var secret by remember { mutableStateOf("") }
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
     var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, true)) }
+    var cfPriority by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_PRIORITY, true)) }
     var dcMappings by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_DC_IPS, "")) }
     var poolSize by rememberSaveable {
         mutableIntStateOf(
             context.getProxyPref(ProxyService.EXTRA_POOL_SIZE, "4").toIntOrNull()?.takeIf { it in listOf(2, 4, 6) } ?: 4,
         )
     }
-    var webProxyEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, false)) }
-    var webProxyServer by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, "")) }
-    var webProxySecret by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, "")) }
     var updateMessage by remember(language) { mutableStateOf("${text.currentVersion}: ${UpdateChecker.currentVersion(context)}") }
     var updateBusy by remember { mutableStateOf(false) }
     var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -502,9 +498,7 @@ private fun ProxyScreen(
     val isProxyRunning by remember { derivedStateOf { proxyStatusState.value.isRunning } }
     val isProxyStarting by remember { derivedStateOf { proxyStatusState.value.isStarting } }
     val isProxyEditable by remember { derivedStateOf { !proxyStatusState.value.isRunning && !proxyStatusState.value.isStarting } }
-    val link = remember(secret, webProxyEnabled, webProxyServer, webProxySecret) {
-        ProxyConfig.telegramProxyLinkForMode(secret, webProxyEnabled, webProxyServer, webProxySecret)
-    }
+    val link = remember(secret) { ProxyConfig.telegramProxyLink(secret) }
 
     fun runUpdateCheck(manual: Boolean) {
         if (updateBusy) return
@@ -541,8 +535,13 @@ private fun ProxyScreen(
         if (isArchiveLoading) return
         isArchiveLoading = true
         scope.launch {
-            archiveReleases = withContext(Dispatchers.IO) {
-                UpdateChecker.fetchAllReleases()
+            archiveReleases = runCatching {
+                withContext(Dispatchers.IO) {
+                    UpdateChecker.fetchAllReleases()
+                }
+            }.getOrElse {
+                Toast.makeText(context, "${text.updateFailed}: ${it.message ?: it.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+                emptyList()
             }
             isArchiveLoading = false
         }
@@ -587,13 +586,14 @@ private fun ProxyScreen(
     }
 
     LaunchedEffect(Unit) {
-        secret = withContext(Dispatchers.IO) { context.getOrCreateProxySecret() }
+        withContext(Dispatchers.IO) { secret = context.getOrCreateProxySecret() }
         delay(250)
         showSplash = false
     }
 
     LaunchedEffect(Unit) {
         var lastLogVer = -1L
+        var tickCount = 0
         while (isActive) {
             val running = ProxyServiceStatus.isRunning
             val newStatus = if (running) {
@@ -608,8 +608,11 @@ private fun ProxyScreen(
                 val newLogs = withContext(Dispatchers.IO) { ProxyLogger.snapshot().takeLast(120) }
                 if (newLogs != logLinesState.value) logLinesState.value = newLogs
             }
-            val newBattery = context.isIgnoringBatteryOptimizations()
-            if (newBattery != batteryUnrestricted) batteryUnrestricted = newBattery
+            if (tickCount % 10 == 0) {
+                val newBattery = context.isIgnoringBatteryOptimizations()
+                if (newBattery != batteryUnrestricted) batteryUnrestricted = newBattery
+            }
+            tickCount++
             val newTraffic = TrafficStatsManager.getSummary(context)
             if (newTraffic != trafficSummaryState.value) trafficSummaryState.value = newTraffic
             delay(1000)
@@ -624,17 +627,18 @@ private fun ProxyScreen(
         }
     }
 
-    if (showUpdateDialog && availableUpdate != null) {
+    val currentAvailableUpdate = availableUpdate
+    if (showUpdateDialog && currentAvailableUpdate != null) {
         UpdateAvailableDialog(
             language = language,
             currentVersion = UpdateChecker.currentVersion(context),
-            update = availableUpdate!!,
+            update = currentAvailableUpdate,
             busy = updateBusy,
             message = updateMessage,
             onInstall = { installAvailableUpdate() },
             onDownloadInBrowser = {
                 runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, availableUpdate!!.apkUrl.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    context.startActivity(Intent(Intent.ACTION_VIEW, currentAvailableUpdate.apkUrl.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
             },
             onDismiss = { if (!updateBusy) showUpdateDialog = false },
@@ -697,39 +701,77 @@ private fun ProxyScreen(
         )
     }
 
-    if (rollbackConfirmRelease != null) {
-        val targetRelease = rollbackConfirmRelease!!
+    rollbackConfirmRelease?.let { targetRelease ->
+        val currentVer = UpdateChecker.currentVersion(context)
+        val isDowngrade = UpdateChecker.isOlder(targetRelease.version, currentVer)
+        val isRu = language == AppLanguage.Ru
         AlertDialog(
             onDismissRequest = { if (!isRollbackDownloading) rollbackConfirmRelease = null },
             icon = {
                 Icon(
-                    Icons.Rounded.History,
+                    if (isDowngrade) Icons.Rounded.WarningAmber else Icons.Rounded.History,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = if (isDowngrade) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                 )
             },
-            title = { Text(if (language == AppLanguage.Ru) "Откат на версию ${targetRelease.version}" else "Rollback to ${targetRelease.version}") },
+            title = { Text(if (isRu) "Переход на версию ${targetRelease.version}" else "Switch to v${targetRelease.version}") },
             text = {
-                Text(
-                    if (language == AppLanguage.Ru) {
-                        "Вы действительно хотите скачать и установить версию ${targetRelease.version}?\n\nВаши сохранённые настройки и секретный ключ будут сохранены."
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (isRu) {
+                            "Вы выбрали версию v${targetRelease.version} (текущая: v$currentVer)."
+                        } else {
+                            "You selected version v${targetRelease.version} (current: v$currentVer)."
+                        }
+                    )
+                    if (isDowngrade) {
+                        Text(
+                            if (isRu) {
+                                "Внимание: Android блокирует прямую установку более старого APK поверх новой версии (INSTALL_FAILED_VERSION_DOWNGRADE). Для отката сначала скачайте APK (или откройте его в браузере), удалите текущую версию приложения и установите скачанный APK."
+                            } else {
+                                "Note: Android blocks installing an older APK directly over a newer version (INSTALL_FAILED_VERSION_DOWNGRADE). To downgrade, download the APK in browser, uninstall the current app first, and then install the downloaded APK."
+                            },
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     } else {
-                        "Are you sure you want to download and install version ${targetRelease.version}?\n\nYour saved settings and secret key will be preserved."
+                        Text(
+                            if (isRu) {
+                                "Ваши сохранённые настройки и секретный ключ будут сохранены."
+                            } else {
+                                "Your saved settings and secret key will be preserved."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
-                )
+                    if (isDowngrade && targetRelease.apkUrl.isNotBlank()) {
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, targetRelease.apkUrl.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                                }
+                            },
+                        ) {
+                            Icon(Icons.Rounded.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.size(6.dp))
+                            ButtonText(if (isRu) "Скачать APK в браузере" else "Download APK in Browser")
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = { rollbackToRelease(targetRelease) },
                     enabled = !isRollbackDownloading,
                 ) {
-                    Text(if (isRollbackDownloading) (if (language == AppLanguage.Ru) "Скачивание..." else "Downloading...") else (if (language == AppLanguage.Ru) "Откатить и установить" else "Rollback & Install"))
+                    Text(if (isRollbackDownloading) (if (isRu) "Скачивание..." else "Downloading...") else (if (isRu) "Скачать и запустить установщик" else "Download & Launch Installer"))
                 }
             },
             dismissButton = {
                 if (!isRollbackDownloading) {
                     TextButton(onClick = { rollbackConfirmRelease = null }) {
-                        Text(if (language == AppLanguage.Ru) "Отмена" else "Cancel")
+                        Text(if (isRu) "Отмена" else "Cancel")
                     }
                 }
             },
@@ -792,9 +834,6 @@ private fun ProxyScreen(
             poolSize = poolSize,
             smartStandby = smartStandby,
             dcMappings = dcMappings,
-            webProxyEnabled = webProxyEnabled,
-            webProxyServer = webProxyServer,
-            webProxySecret = webProxySecret,
         )
         ExportConfigDialog(language = language, jsonText = profile.exportToJson(secret), onDismiss = { showExportDialog = false })
     }
@@ -809,17 +848,11 @@ private fun ProxyScreen(
                 cfEnabled = cfg.cfEnabled
                 poolSize = cfg.poolSize
                 smartStandby = cfg.smartStandby
-                webProxyEnabled = cfg.webProxyEnabled
-                if (cfg.webProxyServer.isNotBlank()) webProxyServer = cfg.webProxyServer
-                if (cfg.webProxySecret.isNotBlank()) webProxySecret = cfg.webProxySecret
                 if (cfg.dcMappings.isNotBlank()) dcMappings = cfg.dcMappings
                 context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
                 context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
                 context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
                 context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
-                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
-                if (cfg.webProxyServer.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                if (cfg.webProxySecret.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
                 if (cfg.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
                 Toast.makeText(context, if (language == AppLanguage.Ru) "Настройки импортированы" else "Settings imported", Toast.LENGTH_SHORT).show()
             },
@@ -962,11 +995,11 @@ private fun ProxyScreen(
                             link = link,
                             logsProvider = { logLinesState.value },
                             cfEnabled = cfEnabled,
+                            cfPriority = cfPriority,
                             language = language,
                             trafficProvider = { trafficSummaryState.value },
                             availableUpdate = availableUpdate,
                             onOpenUpdateDialog = { showUpdateDialog = true },
-                            webProxyEnabled = webProxyEnabled,
                             onResetTraffic = {
                                 TrafficStatsManager.resetStats(context)
                                 trafficSummaryState.value = TrafficStatsManager.getSummary(context)
@@ -974,23 +1007,15 @@ private fun ProxyScreen(
                             onStart = {
                                 if (!ProxyConfig.isValidDcMappings(dcMappings)) {
                                     Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
-                                } else if (webProxyEnabled && WebProxyProtocol.parseEndpointInput(webProxyServer, webProxySecret.ifBlank { secret }) == null) {
-                                    Toast.makeText(
-                                        context,
-                                        if (language == AppLanguage.Ru) "Укажите корректный сервер и секрет Web Proxy" else "Enter a valid Web Proxy server and secret",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
                                 } else {
                                     context.startProxyService(
                                         secret = secret,
                                         cfWorkerDomain = cfWorkerDomain,
                                         cfEnabled = cfEnabled,
+                                        cfPriority = cfPriority,
                                         poolSize = poolSize,
                                         dcMappings = dcMappings,
                                         smartStandby = smartStandby,
-                                        webProxyEnabled = webProxyEnabled,
-                                        webProxyServer = webProxyServer,
-                                        webProxySecret = webProxySecret,
                                     )
                                     proxyStatusState.value = ProxyStatus(isStarting = true)
                                 }
@@ -1000,7 +1025,7 @@ private fun ProxyScreen(
                                 proxyStatusState.value = ProxyStatus(false)
                             },
                             onCopyLink = {
-                                context.copyToClipboard(link)
+                                context.copyToClipboard(link, isSensitive = true)
                                 Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
                             },
                             onOpenTelegram = {
@@ -1048,142 +1073,88 @@ private fun ProxyScreen(
                                 context.saveProxyPref(ProxyService.EXTRA_DC_IPS, it)
                             },
                             enabled = isProxyEditable,
-                        cfEnabled = cfEnabled,
-                        onCfEnabledChange = {
-                            cfEnabled = it
-                            context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, it)
-                        },
-                        smartStandby = smartStandby,
-                        onSmartStandbyChange = {
-                            smartStandby = it
-                            context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, it)
-                        },
-                        webProxyEnabled = webProxyEnabled,
-                        webProxyServer = webProxyServer,
-                        webProxySecret = webProxySecret,
-                        onWebProxyEnabledChange = {
-                            webProxyEnabled = it
-                            context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, it)
-                        },
-                        onWebProxyServerChange = { input ->
-                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
-                            if (parsedLink != null) {
-                                webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.displaySecret
-                                webProxyEnabled = true
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
-                            } else {
-                                webProxyServer = input.trim()
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                            }
-                        },
-                        onWebProxySecretChange = { input ->
-                            val parsedLink = WebProxyProtocol.parseWebProxyLink(input)
-                            if (parsedLink != null) {
-                                webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.displaySecret
-                                webProxyEnabled = true
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
-                            } else {
-                                webProxySecret = input.trim()
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                            }
-                        },
-                        onPasteWebProxyLink = { rawLink ->
-                            val parsedLink = WebProxyProtocol.parseWebProxyLink(rawLink)
-                            if (parsedLink != null) {
-                                webProxyServer = parsedLink.serverField
-                                webProxySecret = parsedLink.displaySecret
-                                webProxyEnabled = true
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret)
-                                context.saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, true)
-                                Toast.makeText(
-                                    context,
-                                    if (language == AppLanguage.Ru) "Импортирован Web Proxy: ${parsedLink.serverField}"
-                                    else "Imported Web Proxy: ${parsedLink.serverField}",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            } else {
-                                Toast.makeText(
-                                    context,
-                                    if (language == AppLanguage.Ru) "Ссылка Web Proxy не распознана"
-                                    else "Invalid Web Proxy link",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            }
-                        },
-                        appChannel = appChannel,
-                        onChannelChange = { newChannel ->
-                            if (newChannel == AppChannel.Beta && appChannel != AppChannel.Beta) {
-                                showBetaWarningDialog = true
-                            } else {
-                                appChannel = newChannel
-                                context.saveProxyPref("app_channel", newChannel.key)
-                                runUpdateCheck(manual = true)
-                            }
-                        },
-                        onOpenVersionArchive = {
-                            showArchiveDialog = true
-                            loadReleaseArchive()
-                        },
-                        onOpenExport = { showExportDialog = true },
-                        onOpenImport = { showImportDialog = true },
-                        secret = secret,
-                        onCopySecret = {
-                            context.copyToClipboard(secret)
-                            Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
-                        },
-                        poolSize = poolSize,
-                        onPoolSizeChange = {
-                            poolSize = it
-                            context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, it.toString())
-                        },
-                        updateMessage = updateMessage,
-                        updateBusy = updateBusy,
-                        availableUpdate = availableUpdate,
-                        autoUpdateEnabled = autoUpdateEnabled,
-                        autoUpdateValue = autoUpdateValue,
-                        autoUpdateUnit = autoUpdateUnit,
-                        autoStartProxy = autoStartProxy,
-                        themeMode = themeMode,
-                        batteryUnrestricted = batteryUnrestricted,
-                        onBatterySettings = { context.requestBatteryOptimizationExemption() },
-                        onAutoUpdateEnabledChange = { enabled ->
-                            if (!enabled) {
-                                showDisableAutoUpdateWarning = true
-                            } else {
-                                autoUpdateEnabled = true
-                                context.saveProxyPref(AUTO_UPDATE_ENABLED_PREF, true)
-                            }
-                        },
-                        onAutoUpdateValueChange = {
-                            autoUpdateValue = it.coerceIn(1, 999)
-                            context.saveProxyPref(AUTO_UPDATE_VALUE_PREF, autoUpdateValue.toString())
-                        },
-                        onAutoUpdateUnitChange = {
-                            autoUpdateUnit = it
-                            context.saveProxyPref(AUTO_UPDATE_UNIT_PREF, it.name)
-                        },
-                        onAutoStartProxyChange = {
-                            autoStartProxy = it
-                            context.saveProxyPref(AUTO_START_PROXY_PREF, it)
-                        },
-                        onThemeModeChange = onThemeModeChange,
-                        onForgetTelegramClient = {
-                            context.saveProxyPref(TELEGRAM_CLIENT_PREF, "")
-                            Toast.makeText(context, if (language == AppLanguage.Ru) "Выбор Telegram сброшен" else "Telegram choice reset", Toast.LENGTH_SHORT).show()
-                        },
-                        onCheckUpdate = { runUpdateCheck(manual = true) },
-                        onInstallUpdate = { installAvailableUpdate() },
-                        onOpenUpdateDialog = { showUpdateDialog = true },
-                    )
-                    AppTab.Help -> HelpPage(language)
-                }
+                            cfEnabled = cfEnabled,
+                            onCfEnabledChange = {
+                                cfEnabled = it
+                                context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, it)
+                            },
+                            cfPriority = cfPriority,
+                            onCfPriorityChange = {
+                                cfPriority = it
+                                context.saveProxyPref(ProxyService.EXTRA_CF_PRIORITY, it)
+                            },
+                            smartStandby = smartStandby,
+                            onSmartStandbyChange = {
+                                smartStandby = it
+                                context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, it)
+                            },
+                            appChannel = appChannel,
+                            onChannelChange = { newChannel ->
+                                if (newChannel == AppChannel.Beta && appChannel != AppChannel.Beta) {
+                                    showBetaWarningDialog = true
+                                } else {
+                                    appChannel = newChannel
+                                    context.saveProxyPref("app_channel", newChannel.key)
+                                    runUpdateCheck(manual = true)
+                                }
+                            },
+                            onOpenVersionArchive = {
+                                showArchiveDialog = true
+                                loadReleaseArchive()
+                            },
+                            onOpenExport = { showExportDialog = true },
+                            onOpenImport = { showImportDialog = true },
+                            secret = secret,
+                            onCopySecret = {
+                                context.copyToClipboard(secret, isSensitive = true)
+                                Toast.makeText(context, text.linkCopied, Toast.LENGTH_SHORT).show()
+                            },
+                            poolSize = poolSize,
+                            onPoolSizeChange = {
+                                poolSize = it
+                                context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, it.toString())
+                            },
+                            updateMessage = updateMessage,
+                            updateBusy = updateBusy,
+                            availableUpdate = availableUpdate,
+                            autoUpdateEnabled = autoUpdateEnabled,
+                            autoUpdateValue = autoUpdateValue,
+                            autoUpdateUnit = autoUpdateUnit,
+                            autoStartProxy = autoStartProxy,
+                            themeMode = themeMode,
+                            batteryUnrestricted = batteryUnrestricted,
+                            onBatterySettings = { context.requestBatteryOptimizationExemption() },
+                            onAutoUpdateEnabledChange = { enabled ->
+                                if (!enabled) {
+                                    showDisableAutoUpdateWarning = true
+                                } else {
+                                    autoUpdateEnabled = true
+                                    context.saveProxyPref(AUTO_UPDATE_ENABLED_PREF, true)
+                                }
+                            },
+                            onAutoUpdateValueChange = {
+                                autoUpdateValue = it.coerceIn(1, 999)
+                                context.saveProxyPref(AUTO_UPDATE_VALUE_PREF, autoUpdateValue.toString())
+                            },
+                            onAutoUpdateUnitChange = {
+                                autoUpdateUnit = it
+                                context.saveProxyPref(AUTO_UPDATE_UNIT_PREF, it.name)
+                            },
+                            onAutoStartProxyChange = {
+                                autoStartProxy = it
+                                context.saveProxyPref(AUTO_START_PROXY_PREF, it)
+                            },
+                            onThemeModeChange = onThemeModeChange,
+                            onForgetTelegramClient = {
+                                context.saveProxyPref(TELEGRAM_CLIENT_PREF, "")
+                                Toast.makeText(context, if (language == AppLanguage.Ru) "Выбор Telegram сброшен" else "Telegram choice reset", Toast.LENGTH_SHORT).show()
+                            },
+                            onCheckUpdate = { runUpdateCheck(manual = true) },
+                            onInstallUpdate = { installAvailableUpdate() },
+                            onOpenUpdateDialog = { showUpdateDialog = true },
+                        )
+                        AppTab.Help -> HelpPage(language)
+                    }
                 }
             }
         }
@@ -1199,22 +1170,17 @@ private fun appBackgroundBrush(mode: AppThemeMode): Brush = when (mode) {
 }
 
 @Composable
-private fun BackgroundOrbs(mode: AppThemeMode) {
-    // 0% background overhead - clean minimal theme
-}
-
-@Composable
 private fun HomePage(
     text: UiStrings,
     statusProvider: () -> ProxyStatus,
     link: String,
     logsProvider: () -> List<String>,
     cfEnabled: Boolean,
+    cfPriority: Boolean,
     language: AppLanguage,
     trafficProvider: () -> TrafficSummary,
     availableUpdate: UpdateInfo?,
     onOpenUpdateDialog: () -> Unit,
-    webProxyEnabled: Boolean,
     onResetTraffic: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -1225,11 +1191,7 @@ private fun HomePage(
     val logs = logsProvider()
     val trafficSummary = trafficProvider()
     val stats = remember(logs) { latestStats(logs) }
-    val subtitle = when {
-        webProxyEnabled -> "127.0.0.1:1443 · Telegram Web Proxy (tproxy-v1)"
-        else -> "127.0.0.1:1443 · MTProto WS Proxy"
-    }
-    PageTitle(if (text.start == "Запустить") "Главная" else "Home", subtitle)
+    PageTitle(if (text.start == "Запустить") "Главная" else "Home", "127.0.0.1:1443 · MTProto WS Proxy")
     if (availableUpdate != null) {
         UpdateBannerCard(
             language = language,
@@ -1243,7 +1205,6 @@ private fun HomePage(
         link = link,
         stats = stats,
         cfEnabled = cfEnabled,
-        webProxyEnabled = webProxyEnabled,
         onStart = onStart,
         onStop = onStop,
         onOpenTelegram = onOpenTelegram,
@@ -1252,20 +1213,19 @@ private fun HomePage(
     TrafficStatsCard(language, trafficSummary, onResetTraffic)
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile(
-            if (webProxyEnabled) (if (text.start == "Запустить") "Туннель tproxy-v1" else "tproxy-v1")
-            else (if (text.start == "Запустить") "Пул WebSocket" else "WS Pool"),
+            if (text.start == "Запустить") "Пул WebSocket" else "WS Pool",
             "${stats.ws} active",
             Modifier.weight(1f),
         )
         StatTile(
-            if (webProxyEnabled) "Web Proxy" else "Cloudflare",
+            "Cloudflare",
             when {
-                webProxyEnabled -> "Active"
-                cfEnabled -> "Priority"
+                cfEnabled && cfPriority -> "Priority"
+                cfEnabled -> "Fallback"
                 else -> "Off"
             },
             Modifier.weight(1f),
-            color = if (webProxyEnabled || cfEnabled) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (cfEnabled) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1360,13 +1320,6 @@ private fun SettingsPage(
     appChannel: AppChannel,
     onChannelChange: (AppChannel) -> Unit,
     onOpenVersionArchive: () -> Unit,
-    webProxyEnabled: Boolean,
-    webProxyServer: String,
-    webProxySecret: String,
-    onWebProxyEnabledChange: (Boolean) -> Unit,
-    onWebProxyServerChange: (String) -> Unit,
-    onWebProxySecretChange: (String) -> Unit,
-    onPasteWebProxyLink: (String) -> Unit,
     cfWorkerDomain: String,
     onCfWorkerDomainChange: (String) -> Unit,
     dcMappings: String,
@@ -1374,6 +1327,8 @@ private fun SettingsPage(
     enabled: Boolean,
     cfEnabled: Boolean,
     onCfEnabledChange: (Boolean) -> Unit,
+    cfPriority: Boolean,
+    onCfPriorityChange: (Boolean) -> Unit,
     smartStandby: Boolean,
     onSmartStandbyChange: (Boolean) -> Unit,
     onOpenExport: () -> Unit,
@@ -1414,17 +1369,6 @@ private fun SettingsPage(
         onOpenExport = onOpenExport,
         onOpenImport = onOpenImport,
     )
-    WebProxyCard(
-        language = language,
-        enabled = enabled,
-        webProxyEnabled = webProxyEnabled,
-        webProxyServer = webProxyServer,
-        webProxySecret = webProxySecret,
-        onWebProxyEnabledChange = onWebProxyEnabledChange,
-        onWebProxyServerChange = onWebProxyServerChange,
-        onWebProxySecretChange = onWebProxySecretChange,
-        onPasteWebProxyLink = onPasteWebProxyLink,
-    )
     SettingsCard(
         text = text,
         cfWorkerDomain = cfWorkerDomain,
@@ -1434,6 +1378,8 @@ private fun SettingsPage(
         enabled = enabled,
         cfEnabled = cfEnabled,
         onCfEnabledChange = onCfEnabledChange,
+        cfPriority = cfPriority,
+        onCfPriorityChange = onCfPriorityChange,
         secret = secret,
         onCopySecret = onCopySecret,
     )
@@ -1464,212 +1410,6 @@ private fun SettingsPage(
         onInstall = onInstallUpdate,
         onOpenDetails = onOpenUpdateDialog,
     )
-}
-
-@Composable
-private fun WebProxyCard(
-    language: AppLanguage,
-    enabled: Boolean,
-    webProxyEnabled: Boolean,
-    webProxyServer: String,
-    webProxySecret: String,
-    onWebProxyEnabledChange: (Boolean) -> Unit,
-    onWebProxyServerChange: (String) -> Unit,
-    onWebProxySecretChange: (String) -> Unit,
-    onPasteWebProxyLink: (String) -> Unit,
-) {
-    val context = LocalContext.current
-    val isRu = language == AppLanguage.Ru
-    var secretVisible by rememberSaveable { mutableStateOf(false) }
-    val parsedEndpoint = remember(webProxyServer, webProxySecret) {
-        WebProxyProtocol.parseEndpointInput(webProxyServer, webProxySecret)
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(
-            1.dp,
-            if (webProxyEnabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-            else MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
-        ),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Telegram Web Proxy",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                        ) {
-                            Text(
-                                "tproxy-v1",
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
-                    }
-                    Text(
-                        if (isRu) {
-                            "Новый протокол маскировки под обычный HTTPS-сайт (t.me/webproxy). Работает со всеми клиентами Telegram через локальный мост 127.0.0.1:1443."
-                        } else {
-                            "New HTTPS website disguise protocol (t.me/webproxy). Works with all Telegram clients via local 127.0.0.1:1443 bridge."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(
-                    checked = webProxyEnabled,
-                    enabled = enabled,
-                    onCheckedChange = onWebProxyEnabledChange,
-                )
-            }
-
-            OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
-                value = webProxyServer,
-                onValueChange = { input ->
-                    if (input.contains("webproxy", ignoreCase = true) && input.contains("secret=", ignoreCase = true)) {
-                        onPasteWebProxyLink(input)
-                    } else {
-                        onWebProxyServerChange(input)
-                    }
-                },
-                enabled = enabled,
-                singleLine = true,
-                label = { Text(if (isRu) "Сервер Web Proxy (или ссылка t.me/webproxy)" else "Web Proxy Server (or t.me/webproxy link)") },
-                placeholder = { Text("example.com/portal", fontFamily = FontFamily.Monospace) },
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-            )
-
-            OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
-                value = webProxySecret,
-                onValueChange = { input ->
-                    if (input.contains("webproxy", ignoreCase = true) && input.contains("server=", ignoreCase = true)) {
-                        onPasteWebProxyLink(input)
-                    } else {
-                        onWebProxySecretChange(input)
-                    }
-                },
-                enabled = enabled,
-                singleLine = true,
-                visualTransformation = if (secretVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                label = { Text(if (isRu) "Секрет Web Proxy (p... / hex / base64)" else "Web Proxy Secret (p... / hex / base64)") },
-                placeholder = { Text("pAIBAwQFBgcICQoLDA0ODxAREhM", fontFamily = FontFamily.Monospace) },
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                trailingIcon = {
-                    IconButton(onClick = { secretVisible = !secretVisible }) {
-                        Icon(
-                            if (secretVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            contentDescription = if (isRu) "Показать секрет" else "Toggle secret visibility",
-                        )
-                    }
-                },
-            )
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    enabled = enabled,
-                    onClick = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
-                        if (clipText.isNotBlank()) {
-                            onPasteWebProxyLink(clipText)
-                        } else {
-                            Toast.makeText(
-                                context,
-                                if (isRu) "Буфер обмена пуст" else "Clipboard is empty",
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        }
-                    },
-                ) {
-                    Icon(Icons.Rounded.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.size(6.dp))
-                    ButtonText(if (isRu) "Вставить ссылку" else "Paste Link")
-                }
-
-                if (parsedEndpoint != null) {
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            context.copyToClipboard(parsedEndpoint.toHttpsShareUrl())
-                            Toast.makeText(
-                                context,
-                                if (isRu) "Ссылка t.me/webproxy скопирована" else "t.me/webproxy link copied",
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        },
-                    ) {
-                        Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.size(6.dp))
-                        ButtonText(if (isRu) "Копировать t.me/webproxy" else "Copy t.me/webproxy")
-                    }
-                }
-            }
-
-            if (webProxyEnabled) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (parsedEndpoint != null) {
-                        SignalMint.copy(alpha = 0.14f)
-                    } else {
-                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
-                    },
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            if (parsedEndpoint != null) Icons.Rounded.CheckCircle else Icons.Rounded.ErrorOutline,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = if (parsedEndpoint != null) SignalMint else MaterialTheme.colorScheme.error,
-                        )
-                        Text(
-                            when {
-                                parsedEndpoint != null -> if (isRu) {
-                                    "Настроен: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
-                                } else {
-                                    "Ready: ${parsedEndpoint.serverParam} (HMAC bridge v${if (parsedEndpoint.basePath.isEmpty()) "1" else "2"})"
-                                }
-                                else -> if (isRu) {
-                                    "Укажите корректный сервер и секрет Web Proxy или вставьте ссылку https://t.me/webproxy?..."
-                                } else {
-                                    "Enter a valid Web Proxy server and secret or paste a https://t.me/webproxy?... link"
-                                }
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = if (parsedEndpoint != null) SignalMint else MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
-            }
-        }
-    }
 }
 
 @Composable
@@ -1833,7 +1573,7 @@ private fun ExportConfigDialog(
         },
         confirmButton = {
             Button(onClick = {
-                context.copyToClipboard(jsonText)
+                context.copyToClipboard(jsonText, isSensitive = true)
                 Toast.makeText(context, if (isRu) "Конфиг скопирован" else "Config copied", Toast.LENGTH_SHORT).show()
                 onDismiss()
             }) {
@@ -1862,18 +1602,18 @@ private fun ImportConfigDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    if (isRu) "Вставьте JSON конфиг или ссылку t.me/webproxy / tg://webproxy / tg://proxy:"
-                    else "Paste JSON config or t.me/webproxy / tg://webproxy / tg://proxy link:",
+                    if (isRu) "Вставьте JSON конфиг или ссылку tg://proxy:"
+                    else "Paste JSON config or tg://proxy link:",
                 )
                 OutlinedTextField(
                     value = rawText,
                     onValueChange = { rawText = it; errorText = null },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("https://t.me/webproxy?server=...&secret=...") },
+                    placeholder = { Text("tg://proxy?server=127.0.0.1&port=1443&secret=...") },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 )
-                if (errorText != null) {
-                    Text(errorText!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                errorText?.let { err ->
+                    Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
@@ -1895,8 +1635,6 @@ private fun ImportConfigDialog(
         },
     )
 }
-
-private fun Modifier.liquidGlass(radius: Dp = 16.dp): Modifier = this
 
 @Composable
 private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOpenSettings: () -> Unit) {
@@ -1996,19 +1734,7 @@ private fun SplashScreen(text: UiStrings) {
 @Composable
 private fun HelpPage(language: AppLanguage) {
     val ru = language == AppLanguage.Ru
-    PageTitle(if (ru) "Помощь" else "Help", "Rust + Tokio core · tproxy-v1")
-    HelpCategory(
-        title = if (ru) "Telegram Web Proxy (tproxy-v1)" else "Telegram Web Proxy (tproxy-v1)",
-        items = if (ru) listOf(
-            "Что это" to "Новый официальный протокол Telegram, маскирующий трафик под обычный HTTPS-сайт с валидным TLS-сертификатом (без уязвимостей FakeTLS).",
-            "Как подключить" to "Вставьте ссылку вида https://t.me/webproxy?server=...&secret=... или tg://webproxy?... в блок Web Proxy и включите тумблер.",
-            "Совместимость" to "Встроенный движок tproxy-v1 поднимает локальный мост 127.0.0.1:1443 (поддерживаются режимы https, https-lanes, websocket и websocket-lanes), поэтому Web Proxy работает во всех Android-клиентах Telegram.",
-        ) else listOf(
-            "What it is" to "Telegram's new official proxy protocol disguising traffic as a real HTTPS website with a valid TLS certificate (replacing legacy FakeTLS).",
-            "How to connect" to "Paste a https://t.me/webproxy?server=...&secret=... or tg://webproxy?... link into the Web Proxy card and enable the toggle.",
-            "Compatibility" to "The built-in tproxy-v1 engine bridges traffic via local 127.0.0.1:1443 (supporting https, https-lanes, websocket, and websocket-lanes modes) so it works in all Android Telegram clients.",
-        ),
-    )
+    PageTitle(if (ru) "Помощь" else "Help", "Rust + Tokio core")
     HelpCategory(
         title = if (ru) "Подключение" else "Connection",
         items = if (ru) listOf(
@@ -2631,40 +2357,6 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
-@Composable
-private fun ControlPanel(text: UiStrings, running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-        ),
-        border = BorderStroke(1.dp, if (running) MaterialTheme.colorScheme.primary.copy(alpha = 0.32f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
-    ) {
-        Row(modifier = Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier.size(48.dp).clip(CircleShape).background(
-                    if (running) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                ),
-                contentAlignment = Alignment.Center,
-            ) {
-                IconButton(onClick = if (running) onStop else onStart, enabled = !locked || running) {
-                    Icon(
-                        Icons.Rounded.PowerSettingsNew,
-                        contentDescription = if (running) text.stop else text.start,
-                        tint = if (running) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(if (running) text.active else text.stopped, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text("${ProxyConfig.HOST}:${ProxyConfig.PORT}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (!running) Button(onClick = onStart, enabled = !locked) { ButtonText(text.start) }
-            if (running) OutlinedButton(onClick = onStop) { ButtonText(text.stop) }
-        }
-    }
-}
 
 private fun latestStats(logs: List<String>): LatestStats {
     val line = logs.lastOrNull { it.contains("Rust stats:") } ?: return LatestStats()
@@ -3173,7 +2865,6 @@ private fun ProxyHeroCard(
     link: String,
     stats: LatestStats,
     cfEnabled: Boolean,
-    webProxyEnabled: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenTelegram: () -> Unit,
@@ -3195,11 +2886,7 @@ private fun ProxyHeroCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    if (webProxyEnabled) {
-                        if (text.start == "Запустить") "Статус Web Proxy" else "Web Proxy Status"
-                    } else {
-                        if (text.start == "Запустить") "Статус MTProto" else "MTProto Status"
-                    },
+                    if (text.start == "Запустить") "Статус MTProto" else "MTProto Status",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -3208,7 +2895,7 @@ private fun ProxyHeroCard(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                 ) {
                     Text(
-                        if (webProxyEnabled) "Web Proxy · tproxy-v1" else "MTProto · WSS",
+                        "MTProto · WSS",
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
@@ -3335,104 +3022,6 @@ private fun ProxyHeroCard(
 }
 
 @Composable
-private fun HeroBadge(label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(modifier = modifier, shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Row(
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.size(5.dp))
-            Text(value, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
-        }
-    }
-}
-
-@Composable
-private fun Header(status: ProxyStatus, text: UiStrings) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-    ) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("TgwsProxy", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text(
-                        if (status.isRunning) text.active else text.stopped,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (status.isRunning) SignalMint else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Box(
-                    modifier = Modifier.size(12.dp).clip(CircleShape).background(
-                        if (status.isRunning) SignalMint else MaterialTheme.colorScheme.outline,
-                    ),
-                )
-            }
-            if (status.isRunning) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Metric(text.uptime, status.uptime)
-                    Metric(text.service, if (status.localPing >= 0) text.online else "N/A", getPingColor(status.localPing))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Metric(label: String, value: String, color: Color = MaterialTheme.colorScheme.onSurface) {
-    Column(horizontalAlignment = Alignment.End) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyLarge, fontFamily = FontFamily.Monospace, color = color)
-    }
-}
-
-@Composable
-private fun ConnectionCard(text: UiStrings, secret: String, link: String, status: ProxyStatus) {
-    var secretVisible by rememberSaveable { mutableStateOf(false) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(text.localEndpoint, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("${ProxyConfig.HOST}:${ProxyConfig.PORT}", style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(text.secret, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        if (secretVisible) secret.chunked(8).joinToString(" ") else "•••••••• •••••••• •••••••• ••••••••",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-                IconButton(onClick = { secretVisible = !secretVisible }) {
-                    Icon(
-                        if (secretVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                        contentDescription = text.secret,
-                    )
-                }
-            }
-            if (status.isRunning) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text.currentLink, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(link.take(96), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-            }
-        }
-    }
-}
-
-@Composable
 private fun SettingsCard(
     text: UiStrings,
     cfWorkerDomain: String,
@@ -3442,10 +3031,13 @@ private fun SettingsCard(
     enabled: Boolean,
     cfEnabled: Boolean,
     onCfEnabledChange: (Boolean) -> Unit,
+    cfPriority: Boolean,
+    onCfPriorityChange: (Boolean) -> Unit,
     secret: String,
     onCopySecret: () -> Unit,
 ) {
     var secretVisible by rememberSaveable { mutableStateOf(false) }
+    val isRu = text.start == "Запустить"
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -3493,14 +3085,14 @@ private fun SettingsCard(
                 enabled = enabled,
                 minLines = 3,
                 maxLines = 6,
-                label = { Text(if (text.start == "Запустить") "Датацентры Telegram (DC → IP)" else "Telegram datacenters (DC → IP)") },
+                label = { Text(if (isRu) "Датацентры Telegram (DC → IP)" else "Telegram datacenters (DC → IP)") },
                 placeholder = { Text("2:149.154.167.51\n4:149.154.167.91", fontFamily = FontFamily.Monospace) },
                 isError = !ProxyConfig.isValidDcMappings(dcMappings),
                 supportingText = {
                     Text(
                         when {
-                            !ProxyConfig.isValidDcMappings(dcMappings) -> if (text.start == "Запустить") "Неверный формат. Одна строка: номерDC:IPv4" else "Invalid format. One line: dcNumber:IPv4"
-                            text.start == "Запустить" -> "Необязательно. Каждая строка направляет Telegram DC на выбранный IP. Пусто = безопасные адреса по умолчанию."
+                            !ProxyConfig.isValidDcMappings(dcMappings) -> if (isRu) "Неверный формат. Одна строка: номерDC:IPv4" else "Invalid format. One line: dcNumber:IPv4"
+                            isRu -> "Необязательно. Каждая строка направляет Telegram DC на выбранный IP. Пусто = безопасные адреса по умолчанию."
                             else -> "Optional. Each line routes a Telegram DC to the selected IP. Empty uses safe defaults."
                         },
                     )
@@ -3514,58 +3106,58 @@ private fun SettingsCard(
                 Text(text.cloudflareCdn, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 Switch(checked = cfEnabled, enabled = enabled, onCheckedChange = onCfEnabledChange)
             }
+            if (cfEnabled) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            if (isRu) "Приоритет Cloudflare (CF-first)" else "Cloudflare Priority (CF-first)",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            if (isRu) "Вкл = сначала CDN-маршрут; выкл = сначала прямой WSS к DC Telegram"
+                            else "On = try CDN route first; Off = try direct WSS to Telegram DC first",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = cfPriority, enabled = enabled, onCheckedChange = onCfPriorityChange)
+                }
+            }
         }
     }
-}
-
-@Composable
-private fun ControlButtons(text: UiStrings, running: Boolean, locked: Boolean, onStart: () -> Unit, onStop: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(modifier = Modifier.weight(1f), onClick = onStart, enabled = !running && !locked) { ButtonText(text.start) }
-        OutlinedButton(modifier = Modifier.weight(1f), onClick = onStop, enabled = running) { ButtonText(text.stop) }
-    }
-}
-
-@Composable
-private fun getPingColor(ping: Long): Color = when {
-    ping < 0 -> MaterialTheme.colorScheme.error
-    ping < 50 -> MaterialTheme.colorScheme.primary
-    ping < 150 -> MaterialTheme.colorScheme.tertiary
-    else -> MaterialTheme.colorScheme.error
 }
 
 private fun Context.startProxyService(
     secret: String,
     cfWorkerDomain: String,
     cfEnabled: Boolean,
+    cfPriority: Boolean = true,
     poolSize: Int,
     dcMappings: String,
     smartStandby: Boolean = true,
-    webProxyEnabled: Boolean = false,
-    webProxyServer: String = "",
-    webProxySecret: String = "",
 ) {
     val cleanWorkerDomain = ProxyConfig.normalizeDomain(cfWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+    saveProxyPref(ProxyService.EXTRA_CF_PRIORITY, cfPriority)
     saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
     saveProxyPref(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
-    saveProxyPref(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
-    saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer.trim())
-    saveProxyPref(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret.trim())
     val intent = Intent(this, ProxyService::class.java)
         .putExtra(ProxyService.EXTRA_SECRET, secret)
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+        .putExtra(ProxyService.EXTRA_CF_PRIORITY, cfPriority)
         .putExtra(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
         .putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
         .putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))
         .putExtra(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
-        .putExtra(ProxyService.EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
-        .putExtra(ProxyService.EXTRA_WEB_PROXY_SERVER, webProxyServer.trim())
-        .putExtra(ProxyService.EXTRA_WEB_PROXY_SECRET, webProxySecret.trim())
     ContextCompat.startForegroundService(this, intent)
 }
 
@@ -3617,9 +3209,15 @@ private fun Context.saveProxyPref(key: String, value: Boolean) {
     getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).edit { putBoolean(key, value) }
 }
 
-private fun Context.copyToClipboard(text: String) {
+private fun Context.copyToClipboard(text: String, isSensitive: Boolean = false) {
     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText("Telegram proxy link", text))
+    val clip = ClipData.newPlainText("Telegram proxy link", text)
+    if (isSensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    clipboard.setPrimaryClip(clip)
 }
 
 private fun Context.findTelegramClients(link: String): List<TelegramClient> {

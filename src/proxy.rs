@@ -319,13 +319,10 @@ fn is_pool_entry_usable(e: &PoolEntry, now: i64) -> bool {
 // ---------------------------------------------------------------------------
 
 pub fn is_http_transport(data: &[u8]) -> bool {
-    if data.len() < 4 {
-        return false;
-    }
-    &data[..4] == b"POST"
-        || &data[..3] == b"GET"
-        || &data[..4] == b"HEAD"
-        || (data.len() >= 7 && &data[..7] == b"OPTIONS")
+    data.starts_with(b"POST")
+        || data.starts_with(b"GET")
+        || data.starts_with(b"HEAD")
+        || data.starts_with(b"OPTIONS")
 }
 
 // ---------------------------------------------------------------------------
@@ -349,27 +346,25 @@ pub async fn bridge_ws(
 ) {
     let ws = Arc::new(ws);
     let last_activity = Arc::new(Mutex::new(std::time::Instant::now()));
-    let cancel = Arc::new(tokio::sync::Notify::new());
+    let bridge_cancel = cancel_token.child_token();
 
     let (mut conn_read, mut conn_write) = conn.into_split();
 
     // ping keepalive
     let ws_ping = ws.clone();
     let la_ping = last_activity.clone();
-    let cancel_ping = cancel.clone();
-    let cancel_token_ping = cancel_token.clone();
+    let cancel_ping = bridge_cancel.clone();
     let ping_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(BRIDGE_PING_INTERVAL);
         interval.tick().await;
         loop {
             tokio::select! {
-                _ = cancel_token_ping.cancelled() => return,
-                _ = cancel_ping.notified() => return,
+                _ = cancel_ping.cancelled() => return,
                 _ = interval.tick() => {
                     let idle = la_ping.lock().await.elapsed();
                     if idle > BRIDGE_PING_INTERVAL {
                         if ws_ping.send_ping().await.is_err() {
-                            cancel_ping.notify_waiters();
+                            cancel_ping.cancel();
                             return;
                         }
                     }
@@ -381,14 +376,12 @@ pub async fn bridge_ws(
     // up: client -> ws
     let ws_up = ws.clone();
     let la_up = last_activity.clone();
-    let cancel_up = cancel.clone();
-    let cancel_token_up = cancel_token.clone();
+    let cancel_up = bridge_cancel.clone();
     let up_task = tokio::spawn(async move {
         let mut buf = vec![0u8; WS_BRIDGE_CHUNK_SIZE];
         loop {
             let read_res = tokio::select! {
-                _ = cancel_token_up.cancelled() => break,
-                _ = cancel_up.notified() => break,
+                _ = cancel_up.cancelled() => break,
                 r = tokio::time::timeout(BRIDGE_READ_TIMEOUT, conn_read.read(&mut buf)) => r,
             };
             let n = match read_res {
@@ -439,19 +432,17 @@ pub async fn bridge_ws(
                 break;
             }
         }
-        cancel_up.notify_waiters();
+        cancel_up.cancel();
     });
 
     // down: ws -> client
     let ws_down = ws.clone();
     let la_down = last_activity.clone();
-    let cancel_down = cancel.clone();
-    let cancel_token_down = cancel_token.clone();
+    let cancel_down = bridge_cancel.clone();
     let down_task = tokio::spawn(async move {
         loop {
             let recv_res = tokio::select! {
-                _ = cancel_token_down.cancelled() => break,
-                _ = cancel_down.notified() => break,
+                _ = cancel_down.cancelled() => break,
                 r = ws_down.recv_with_timeout(BRIDGE_READ_TIMEOUT) => r,
             };
             let mut data = match recv_res {
@@ -464,16 +455,22 @@ pub async fn bridge_ws(
 
             tg_dec.xor(&mut data);
             clt_enc.xor(&mut data);
-            if conn_write.write_all(&data).await.is_err() {
+            let write_ok = tokio::select! {
+                _ = cancel_down.cancelled() => false,
+                r = tokio::time::timeout(WS_WRITE_TIMEOUT, conn_write.write_all(&data)) => {
+                    matches!(r, Ok(Ok(())))
+                }
+            };
+            if !write_ok {
                 break;
             }
         }
-        cancel_down.notify_waiters();
+        cancel_down.cancel();
     });
 
     let _ = up_task.await;
     let _ = down_task.await;
-    cancel.notify_waiters();
+    bridge_cancel.cancel();
     ping_task.abort();
 
     ws.close().await;
@@ -505,18 +502,16 @@ pub async fn bridge_tcp(
     let tg_enc = Arc::new(Mutex::new(tg_enc));
     let tg_dec = Arc::new(Mutex::new(tg_dec));
 
-    let cancel = Arc::new(tokio::sync::Notify::new());
+    let bridge_cancel = cancel_token.child_token();
 
-    let cancel_up = cancel.clone();
-    let cancel_token_up = cancel_token.clone();
+    let cancel_up = bridge_cancel.clone();
     let clt_dec_up = clt_dec.clone();
     let tg_enc_up = tg_enc.clone();
     let up = async move {
         let mut buf = vec![0u8; 131072];
         loop {
             let n = tokio::select! {
-                _ = cancel_token_up.cancelled() => break,
-                _ = cancel_up.notified() => break,
+                _ = cancel_up.cancelled() => break,
                 r = tokio::time::timeout(BRIDGE_READ_TIMEOUT, c_read.read(&mut buf)) => match r {
                     Ok(Ok(0)) => break,
                     Ok(Ok(n)) => n,
@@ -527,23 +522,27 @@ pub async fn bridge_tcp(
             STATS.bytes_up.fetch_add(n as i64, Ordering::Relaxed);
             clt_dec_up.lock().await.xor(chunk);
             tg_enc_up.lock().await.xor(chunk);
-            if r_write.write_all(chunk).await.is_err() {
+            let write_ok = tokio::select! {
+                _ = cancel_up.cancelled() => false,
+                r = tokio::time::timeout(WS_WRITE_TIMEOUT, r_write.write_all(chunk)) => {
+                    matches!(r, Ok(Ok(())))
+                }
+            };
+            if !write_ok {
                 break;
             }
         }
-        cancel_up.notify_waiters();
+        cancel_up.cancel();
     };
 
-    let cancel_down = cancel.clone();
-    let cancel_token_down = cancel_token.clone();
+    let cancel_down = bridge_cancel.clone();
     let tg_dec_down = tg_dec.clone();
     let clt_enc_down = clt_enc.clone();
     let down = async move {
         let mut buf = vec![0u8; 131072];
         loop {
             let n = tokio::select! {
-                _ = cancel_token_down.cancelled() => break,
-                _ = cancel_down.notified() => break,
+                _ = cancel_down.cancelled() => break,
                 r = tokio::time::timeout(BRIDGE_READ_TIMEOUT, r_read.read(&mut buf)) => match r {
                     Ok(Ok(0)) => break,
                     Ok(Ok(n)) => n,
@@ -554,11 +553,17 @@ pub async fn bridge_tcp(
             STATS.bytes_down.fetch_add(n as i64, Ordering::Relaxed);
             tg_dec_down.lock().await.xor(chunk);
             clt_enc_down.lock().await.xor(chunk);
-            if c_write.write_all(chunk).await.is_err() {
+            let write_ok = tokio::select! {
+                _ = cancel_down.cancelled() => false,
+                r = tokio::time::timeout(WS_WRITE_TIMEOUT, c_write.write_all(chunk)) => {
+                    matches!(r, Ok(Ok(())))
+                }
+            };
+            if !write_ok {
                 break;
             }
         }
-        cancel_down.notify_waiters();
+        cancel_down.cancel();
     };
 
     tokio::join!(up, down);
@@ -583,7 +588,12 @@ pub async fn tcp_fallback(
     tg_dec: TrackedStream,
     cancel_token: CancellationToken,
 ) -> bool {
-    let addr = format!("{}:{}", dst, port);
+    let dst = dst.trim();
+    let addr = if dst.contains(':') && !dst.starts_with('[') {
+        format!("[{}]:{}", dst, port)
+    } else {
+        format!("{}:{}", dst, port)
+    };
     let mut remote =
         match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await {
             Ok(Ok(r)) => r,
@@ -603,7 +613,10 @@ pub async fn tcp_fallback(
         .connections_tcp_fallback
         .fetch_add(1, Ordering::Relaxed);
     linfo!(" DC{}{} подключен по TCP", dc, media_tag(is_media));
-    if remote.write_all(init).await.is_err() {
+    if !matches!(
+        tokio::time::timeout(WS_WRITE_TIMEOUT, remote.write_all(init)).await,
+        Ok(Ok(()))
+    ) {
         lwarn!(
             " TCP relayInit write failed DC{}{}",
             dc,
@@ -913,10 +926,14 @@ pub async fn handle_client(
 
     let current_secret = PROXY_SECRET.read().clone();
     let secret_bytes = hex::decode(&current_secret).unwrap_or_default();
+    if secret_bytes.len() != 16 {
+        STATS.connections_bad.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
 
     // 64-байтный handshake
     let mut handshake = [0u8; 64];
-    match tokio::time::timeout(Duration::from_secs(10), conn.read_exact(&mut handshake)).await {
+    match tokio::time::timeout(Duration::from_secs(5), conn.read_exact(&mut handshake)).await {
         Ok(Ok(_)) => {}
         _ => return,
     }
@@ -952,6 +969,10 @@ pub async fn handle_client(
     let mut dc = dc_raw as i32;
     if dc < 0 {
         dc = -dc;
+    }
+    if !(1..=5).contains(&dc) && dc != 203 {
+        STATS.connections_bad.fetch_add(1, Ordering::Relaxed);
+        return;
     }
     let is_media = dc_raw < 0;
     let m_tag = media_tag(is_media);
@@ -1047,7 +1068,12 @@ pub async fn handle_client(
     let dc_configured = target_opt.is_some();
     let target = target_opt.unwrap_or_default();
 
-    let blacklisted = WS_BLACKLIST.read().get(&dc_key).copied().unwrap_or(false);
+    let fail_until = DC_FAIL_UNTIL.read().get(&dc_key).copied().unwrap_or(0.0);
+    let mut blacklisted = WS_BLACKLIST.read().get(&dc_key).copied().unwrap_or(false);
+    if blacklisted && now >= fail_until {
+        WS_BLACKLIST.write().remove(&dc_key);
+        blacklisted = false;
+    }
 
     if !dc_configured || blacklisted {
         do_fallback(
@@ -1067,7 +1093,6 @@ pub async fn handle_client(
         return;
     }
 
-    let fail_until = DC_FAIL_UNTIL.read().get(&dc_key).copied().unwrap_or(0.0);
     let ws_timeout = if now < fail_until {
         WS_FAIL_TIMEOUT
     } else {
@@ -1092,7 +1117,8 @@ pub async fn handle_client(
         );
         if ws_failed_redirect && all_redirects {
             WS_BLACKLIST.write().insert(dc_key, true);
-            lwarn!(" DC{}{} заблокирован (302)", dc, m_tag);
+            DC_FAIL_UNTIL.write().insert(dc_key, now + 300.0);
+            lwarn!(" DC{}{} временно заблокирован (302, 5 мин)", dc, m_tag);
         } else {
             DC_FAIL_UNTIL.write().insert(dc_key, now + DC_FAIL_COOLDOWN);
         }
@@ -1132,7 +1158,8 @@ pub async fn handle_client(
             None => {
                 if retry_failed_redirect && retry_all_redirects {
                     WS_BLACKLIST.write().insert(dc_key, true);
-                    lwarn!(" DC{}{} заблокирован (302)", dc, m_tag);
+                    DC_FAIL_UNTIL.write().insert(dc_key, now + 300.0);
+                    lwarn!(" DC{}{} временно заблокирован (302, 5 мин)", dc, m_tag);
                 }
                 lwarn!(" direct fallback DC{}{}", dc, m_tag);
                 let splitter_fb = MsgSplitter::new(&relay_init, proto);
@@ -1297,7 +1324,9 @@ pub async fn run_proxy(
                             handle_client(p, conn, cancel).await;
                         });
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        ldebug!(" accept error: {}", e);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
                 }
@@ -1323,10 +1352,9 @@ pub fn parse_cidr_pool(cidrs_str: &str) -> HashMap<i32, String> {
         return result;
     }
     for pair in cidrs_str.split(',') {
-        let parts: Vec<&str> = pair.split(':').collect();
-        if parts.len() == 2 {
-            let dc_raw = parts[0].trim();
-            let ip_raw = parts[1].trim();
+        if let Some((dc_raw, ip_raw)) = pair.trim().split_once(':') {
+            let dc_raw = dc_raw.trim();
+            let ip_raw = ip_raw.trim().trim_matches(|c| c == '[' || c == ']');
             if let Ok(dc) = dc_raw.parse::<i32>() {
                 if !ip_raw.is_empty() {
                     if let Ok(ip) = ip_raw.parse::<std::net::IpAddr>() {
@@ -1349,5 +1377,25 @@ mod tests {
         assert_eq!(routes.get(&2).map(String::as_str), Some("149.154.167.51"));
         assert_eq!(routes.get(&4).map(String::as_str), Some("149.154.167.91"));
         assert_eq!(routes.len(), 2);
+    }
+
+    #[test]
+    fn parse_cidr_pool_supports_ipv4_and_ipv6() {
+        let routes = parse_cidr_pool("2:149.154.167.51,4:2001:67c:4e8:f004::a");
+        assert_eq!(routes.get(&2).map(String::as_str), Some("149.154.167.51"));
+        assert_eq!(
+            routes.get(&4).map(String::as_str),
+            Some("2001:67c:4e8:f004::a")
+        );
+    }
+
+    #[test]
+    fn is_http_transport_handles_short_and_valid_methods() {
+        assert!(!is_http_transport(b"GE"));
+        assert!(is_http_transport(b"GET"));
+        assert!(is_http_transport(b"POST / HTTP/1.1"));
+        assert!(is_http_transport(b"HEAD /"));
+        assert!(is_http_transport(b"OPTIONS *"));
+        assert!(!is_http_transport(&[0x16, 0x03, 0x01, 0x00]));
     }
 }

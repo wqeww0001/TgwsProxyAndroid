@@ -11,15 +11,20 @@ object QrGenerator {
     }
 
     fun encode(text: String): QrMatrix {
-        val data = text.toByteArray(Charsets.UTF_8)
-        // Choose minimum version that fits data (Version 1-6)
+        val rawData = text.toByteArray(Charsets.UTF_8)
+        val data = if (rawData.size > 271) rawData.copyOf(271) else rawData
+        // Choose minimum version that fits data at EC Level L (Version 1-10)
         val version = when {
             data.size <= 17 -> 1
             data.size <= 32 -> 2
             data.size <= 53 -> 3
             data.size <= 78 -> 4
             data.size <= 106 -> 5
-            else -> 6
+            data.size <= 134 -> 6
+            data.size <= 154 -> 7
+            data.size <= 192 -> 8
+            data.size <= 230 -> 9
+            else -> 10
         }
         val size = version * 4 + 17
         val modules = Array(size) { BooleanArray(size) }
@@ -60,7 +65,10 @@ object QrGenerator {
                 4 -> intArrayOf(6, 26)
                 5 -> intArrayOf(6, 30)
                 6 -> intArrayOf(6, 34)
-                else -> intArrayOf(6, 34)
+                7 -> intArrayOf(6, 22, 38)
+                8 -> intArrayOf(6, 24, 42)
+                9 -> intArrayOf(6, 26, 46)
+                else -> intArrayOf(6, 28, 50)
             }
             for (r in alignPos) {
                 for (c in alignPos) {
@@ -99,6 +107,23 @@ object QrGenerator {
             if (!reserved[r][8]) reserved[r][8] = true
         }
 
+        // Write and reserve version info areas for version >= 7
+        if (version >= 7) {
+            val versionInfo = when (version) {
+                7 -> 0x07C94
+                8 -> 0x085BC
+                9 -> 0x09A99
+                else -> 0x0A4D3
+            }
+            for (i in 0 until 18) {
+                val bit = ((versionInfo shr i) and 1) == 1
+                val a = size - 11 + (i % 3)
+                val b = i / 3
+                setModule(a, b, bit, isReserved = true)
+                setModule(b, a, bit, isReserved = true)
+            }
+        }
+
         // Bit stream encoding (Byte mode: mode=0100, length, data, padding)
         val bitBuffer = mutableListOf<Boolean>()
         fun appendBits(value: Int, length: Int) {
@@ -108,7 +133,8 @@ object QrGenerator {
         }
 
         appendBits(0b0100, 4) // Byte mode
-        appendBits(data.size, 8) // Character count
+        val countIndicatorBits = if (version >= 10) 16 else 8
+        appendBits(data.size, countIndicatorBits) // Character count
         for (b in data) {
             appendBits(b.toInt() and 0xFF, 8)
         }
@@ -130,7 +156,7 @@ object QrGenerator {
             padByte = if (padByte == 0xEC) 0x11 else 0xEC
         }
 
-        // Simple Reed-Solomon style error correction filling
+        // Multi-block Reed-Solomon error correction and interleaving
         val allCodewords = generateCodewords(bitBuffer, version)
 
         // Place data & EC bits in zigzag order
@@ -180,7 +206,31 @@ object QrGenerator {
         3 -> 440
         4 -> 640
         5 -> 864
-        else -> 1088
+        6 -> 1088
+        7 -> 1248
+        8 -> 1552
+        9 -> 1856
+        else -> 2192
+    }
+
+    private data class RsBlockSpec(val dataBytes: Int, val ecBytes: Int)
+
+    private fun blockSpecsFor(version: Int): List<RsBlockSpec> = when (version) {
+        1 -> listOf(RsBlockSpec(19, 7))
+        2 -> listOf(RsBlockSpec(34, 10))
+        3 -> listOf(RsBlockSpec(55, 15))
+        4 -> listOf(RsBlockSpec(80, 20))
+        5 -> listOf(RsBlockSpec(108, 26))
+        6 -> listOf(RsBlockSpec(68, 18), RsBlockSpec(68, 18))
+        7 -> listOf(RsBlockSpec(78, 20), RsBlockSpec(78, 20))
+        8 -> listOf(RsBlockSpec(97, 24), RsBlockSpec(97, 24))
+        9 -> listOf(RsBlockSpec(116, 30), RsBlockSpec(116, 30))
+        else -> listOf(
+            RsBlockSpec(68, 18),
+            RsBlockSpec(68, 18),
+            RsBlockSpec(69, 18),
+            RsBlockSpec(69, 18),
+        )
     }
 
     private fun generateCodewords(dataBits: List<Boolean>, version: Int): List<Boolean> {
@@ -194,22 +244,35 @@ object QrGenerator {
             dataBytes[i] = v
         }
 
-        val ecBytesCount = when (version) {
-            1 -> 7
-            2 -> 10
-            3 -> 15
-            4 -> 20
-            5 -> 26
-            else -> 36
+        val specs = blockSpecsFor(version)
+        val dataBlocks = ArrayList<IntArray>(specs.size)
+        val ecBlocks = ArrayList<IntArray>(specs.size)
+        var offset = 0
+        for (spec in specs) {
+            val blockData = dataBytes.copyOfRange(offset, offset + spec.dataBytes)
+            offset += spec.dataBytes
+            dataBlocks.add(blockData)
+            ecBlocks.add(computeRsEc(blockData, spec.ecBytes))
         }
 
-        val ecBytes = computeRsEc(dataBytes, ecBytesCount)
         val result = mutableListOf<Boolean>()
-        for (b in dataBytes) {
-            for (i in 7 downTo 0) result.add(((b shr i) and 1) == 1)
+        val maxDataLen = dataBlocks.maxOf { it.size }
+        for (col in 0 until maxDataLen) {
+            for (block in dataBlocks) {
+                if (col < block.size) {
+                    val b = block[col]
+                    for (i in 7 downTo 0) result.add(((b shr i) and 1) == 1)
+                }
+            }
         }
-        for (b in ecBytes) {
-            for (i in 7 downTo 0) result.add(((b shr i) and 1) == 1)
+        val maxEcLen = ecBlocks.maxOf { it.size }
+        for (col in 0 until maxEcLen) {
+            for (block in ecBlocks) {
+                if (col < block.size) {
+                    val b = block[col]
+                    for (i in 7 downTo 0) result.add(((b shr i) and 1) == 1)
+                }
+            }
         }
         return result
     }

@@ -6,6 +6,8 @@
 
 # Native.load maps these interface method names directly to exported Rust C
 # symbols such as StartProxy and GetStats.
+-keep interface * extends com.sun.jna.Library { *; }
 -keep interface com.tgwsproxy.android.ProxyLibrary { *; }
+-keep class com.tgwsproxy.android.ProxyLibrary$* { *; }
 
 -dontwarn java.awt.**

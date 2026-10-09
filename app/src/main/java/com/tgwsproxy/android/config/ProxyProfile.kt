@@ -1,7 +1,6 @@
 package com.tgwsproxy.android.config
 
 import com.tgwsproxy.android.ProxyConfig
-import com.tgwsproxy.android.webproxy.WebProxyProtocol
 import org.json.JSONObject
 
 data class ProxyProfile(
@@ -12,12 +11,10 @@ data class ProxyProfile(
     val enDesc: String,
     val cfWorkerDomain: String,
     val cfEnabled: Boolean,
+    val cfPriority: Boolean = true,
     val poolSize: Int,
     val smartStandby: Boolean,
     val dcMappings: String = "",
-    val webProxyEnabled: Boolean = false,
-    val webProxyServer: String = "",
-    val webProxySecret: String = "",
 ) {
     fun name(isRu: Boolean): String = if (isRu) ruName else enName
     fun description(isRu: Boolean): String = if (isRu) ruDesc else enDesc
@@ -28,12 +25,10 @@ data class ProxyProfile(
             put("secret", secret)
             put("cf_worker_domain", cfWorkerDomain)
             put("cf_enabled", cfEnabled)
+            put("cf_priority", cfPriority)
             put("pool_size", poolSize)
             put("smart_standby", smartStandby)
             put("dc_mappings", dcMappings)
-            put("web_proxy_enabled", webProxyEnabled)
-            put("web_proxy_server", webProxyServer)
-            put("web_proxy_secret", webProxySecret)
         }.toString(2)
     }
 
@@ -42,59 +37,35 @@ data class ProxyProfile(
             val secret: String?,
             val cfWorkerDomain: String,
             val cfEnabled: Boolean,
+            val cfPriority: Boolean = true,
             val poolSize: Int,
             val smartStandby: Boolean,
             val dcMappings: String,
-            val webProxyEnabled: Boolean = false,
-            val webProxyServer: String = "",
-            val webProxySecret: String = "",
         )
 
         fun parseImport(raw: String): ImportedConfig? {
             val text = raw.trim()
             if (text.isEmpty()) return null
 
-            // 1. Check Telegram Web Proxy link (https://t.me/webproxy?... or tg://webproxy?...)
-            WebProxyProtocol.parseWebProxyLink(text)?.let { endpoint ->
-                return ImportedConfig(
-                    secret = endpoint.plain16HexSecret.takeIf { ProxyConfig.isValidSecret(it) },
-                    cfWorkerDomain = "",
-                    cfEnabled = true,
-                    poolSize = 4,
-                    smartStandby = true,
-                    dcMappings = "",
-                    webProxyEnabled = true,
-                    webProxyServer = endpoint.serverField,
-                    webProxySecret = endpoint.mtprotoSecretHex,
-                )
-            }
-
-            // 2. Check JSON config
+            // JSON config (exported by this app; unknown legacy keys are ignored)
             if (text.startsWith("{") && text.endsWith("}")) {
                 return try {
                     val json = JSONObject(text)
-                    val secret = json.optString("secret").takeIf { ProxyConfig.isValidSecret(it) }
-                    val wpServer = json.optString("web_proxy_server", "").trim()
-                    val wpSecret = json.optString("web_proxy_secret", "").trim()
-                    val wpEnabled = json.optBoolean("web_proxy_enabled", false) &&
-                        WebProxyProtocol.parseEndpointInput(wpServer, wpSecret.ifBlank { secret.orEmpty() }) != null
                     ImportedConfig(
-                        secret = secret,
+                        secret = json.optString("secret").takeIf { ProxyConfig.isValidSecret(it) },
                         cfWorkerDomain = ProxyConfig.cleanDomain(json.optString("cf_worker_domain", "")),
                         cfEnabled = json.optBoolean("cf_enabled", true),
+                        cfPriority = json.optBoolean("cf_priority", true),
                         poolSize = json.optInt("pool_size", 4).takeIf { it in setOf(2, 4, 6) } ?: 4,
                         smartStandby = json.optBoolean("smart_standby", true),
                         dcMappings = json.optString("dc_mappings", ""),
-                        webProxyEnabled = wpEnabled,
-                        webProxyServer = wpServer,
-                        webProxySecret = wpSecret,
                     )
                 } catch (_: Throwable) {
                     null
                 }
             }
 
-            // 3. Support tg://proxy?server=... or https://t.me/proxy?... or tgws://config?... link formats
+            // tg://proxy or https://t.me/proxy or tgws://config links
             if (
                 text.startsWith("tg://proxy", ignoreCase = true) ||
                 text.startsWith("https://t.me/proxy", ignoreCase = true) ||

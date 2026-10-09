@@ -1,6 +1,5 @@
 pluginManagement {
     repositories {
-        maven("https://maven.aliyun.com/repository/google")
         google {
             content {
                 includeGroupByRegex("com\\.android.*")
@@ -10,14 +9,15 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
+        maven("https://maven.aliyun.com/repository/google")
     }
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        maven("https://maven.aliyun.com/repository/google")
         google()
         mavenCentral()
+        maven("https://maven.aliyun.com/repository/google")
     }
 }
 

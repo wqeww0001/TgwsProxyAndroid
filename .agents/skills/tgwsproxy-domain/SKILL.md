@@ -3,8 +3,7 @@ name: tgwsproxy-domain
 description: >-
   Specialized domain and UI/UX engineering skill for TgwsProxyAndroid.
   Use this skill whenever modifying, designing, or debugging the Telegram MTProto WS Proxy,
-  Telegram Web Proxy (tproxy-v1), Rust JNI core (libtgwsproxy.so),
-  in-app update flow, or Jetpack Compose Material 3 interface of TgwsProxyAndroid.
+  Rust JNI core (libtgwsproxy.so), in-app update flow, or Jetpack Compose Material 3 interface of TgwsProxyAndroid.
 ---
 
 # TgwsProxyAndroid Engineering & UI Design Skill
@@ -16,18 +15,13 @@ description: >-
 ### Core Subsystems
 1. **Local Loopback Bridge (`127.0.0.1:1443`)**:
    - All Telegram Android clients (Official, Plus, Nekogram, AyuGram, iMe, Challegram) connect via a local MTProto proxy link (`tg://proxy?server=127.0.0.1&port=1443&secret=...`).
-2. **Dual Transport Modes**:
-   - **MTProto WebSocket Mode (Rust JNI Core `libtgwsproxy.so`)**:
-     - Entry point: `src/lib.rs`, `src/proxy.rs`.
-     - Extracts target Telegram DC (`1..5`, media/test variants) from the 64-byte MTProto obfuscated2 header and routes over `wss://kws{dc}.web.telegram.org/apiws` or Cloudflare Worker/CDN domains.
-   - **Telegram Web Proxy Mode (`tproxy-v1` / Kotlin Engine)**:
-     - Entry point: `app/src/main/java/com/tgwsproxy/android/webproxy/WebProxyProtocol.kt` and `WebProxyEngine.kt`.
-     - Parses `https://t.me/webproxy?server=...&port=...&secret=...` and `tg://webproxy?...` links, including `0x70`-prefixed base64url secrets with embedded `base_path`.
-     - Derives the 32-byte `bridge` key via `HMAC-SHA256(secret, "tproxy-v1:" + lower(host) + ":" + port)` (`64` lowercase hex chars).
-     - Fetches the 16-byte `bootstrap` token (`32` hex chars) from `GET https://{host}:{port}{base_path}/` with header `X-Https-Bridge: <bridge>`.
-     - Multiplexes frames (`OPEN=0x01`, `DATA=0x02`, `CLOSE=0x03`, `PING=0x04`, `PONG=0x05`, `WINDOW=0x06`, 9-byte header `[type:1][stream_id:4 BE][len:4 BE]`) across `https`, `https-lanes`, `websocket`, and `websocket-lanes` modes.
-3. **Seamless In-App Updater (`UpdateChecker.kt` & `BootReceiver.kt`)**:
-   - Downloads signed APK releases from GitHub (`wqeww0001/TgwsProxyAndroid`), persists `PREF_REOPEN_AFTER_UPDATE` and `PREF_WAS_RUNNING_BEFORE_UPDATE`, and automatically reopens `MainActivity` and restarts `ProxyService` upon `ACTION_MY_PACKAGE_REPLACED`.
+2. **MTProto WebSocket Mode (Rust JNI Core `libtgwsproxy.so`)**:
+   - Entry point: `src/lib.rs`, `src/proxy.rs`.
+   - Extracts target Telegram DC (`1..5`, media/test variants) from the 64-byte MTProto obfuscated2 header and routes over `wss://kws{dc}.web.telegram.org/apiws` or Cloudflare Worker/CDN domains with direct TCP fallback.
+3. **Hardware-Backed Secret Storage (`SecureSecretStore.kt`)**:
+   - Encrypts the local MTProto secret (`secret_ciphertext`) using Android Keystore AES-GCM (`128-bit` auth tag) with volatile in-memory caching.
+4. **Seamless In-App Updater (`UpdateChecker.kt` & `BootReceiver.kt`)**:
+   - Downloads signed APK releases from GitHub (`wqeww0001/TgwsProxyAndroid`) into `cacheDir/updates/`, verifies package name and SHA-256 signing certificate history, persists `PREF_REOPEN_AFTER_UPDATE` and `PREF_WAS_RUNNING_BEFORE_UPDATE`, and automatically reopens `MainActivity` and restarts `ProxyService` upon `ACTION_MY_PACKAGE_REPLACED`.
 
 ---
 

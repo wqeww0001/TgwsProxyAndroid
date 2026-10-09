@@ -18,8 +18,6 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.edit
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
-import com.tgwsproxy.android.webproxy.WebProxyEngine
-import com.tgwsproxy.android.webproxy.WebProxyProtocol
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,7 +37,6 @@ class ProxyService : Service() {
     private val nativeInitializing = AtomicBoolean(false)
     private val restartInProgress = AtomicBoolean(false)
     private val destroyed = AtomicBoolean(false)
-    private val nativeCallLock = Any()
     private var wakeLock: PowerManager.WakeLock? = null
     private var wakeLockAcquiredAtMs: Long = 0
     private var startTime: Long = 0
@@ -54,11 +51,9 @@ class ProxyService : Service() {
     @Volatile private var lastSecret: String = ""
     @Volatile private var lastCfDomain: String = ""
     @Volatile private var lastCfEnabled: Boolean = true
+    @Volatile private var lastCfPriority: Boolean = true
     @Volatile private var lastPoolSize: Int = DEFAULT_POOL_SIZE
     @Volatile private var lastDcIps: String = ""
-    @Volatile private var lastWebProxyEnabled: Boolean = false
-    @Volatile private var lastWebProxyServer: String = ""
-    @Volatile private var lastWebProxySecret: String = ""
     @Volatile private var consecutivePortFailures: Int = 0
     @Volatile private var lastRouteFailures: Long = 0
     @Volatile private var lastWsAttemptFailures: Long = 0
@@ -67,6 +62,7 @@ class ProxyService : Service() {
     @Volatile private var smartStandby: Boolean = true
     @Volatile private var isScreenOff: Boolean = false
     @Volatile private var lastTrafficActiveAtMs: Long = System.currentTimeMillis()
+    @Volatile private var isRuLocale: Boolean = true
 
     private val screenReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -99,6 +95,8 @@ class ProxyService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        isRuLocale = prefs.getString("ui_language", "ru") != "en"
         createNotificationChannel()
         registerNetworkCallback()
         val filter = android.content.IntentFilter().apply {
@@ -115,9 +113,12 @@ class ProxyService : Service() {
         }
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        isRuLocale = prefs.getString("ui_language", "ru") != "en"
         val providedSecret = intent?.getStringExtra(EXTRA_SECRET)?.takeIf(ProxyConfig::isValidSecret)
         val cfEnabled = intent?.getBooleanExtra(EXTRA_CF_ENABLED, prefs.getBoolean(EXTRA_CF_ENABLED, true))
             ?: prefs.getBoolean(EXTRA_CF_ENABLED, true)
+        val cfPriority = intent?.getBooleanExtra(EXTRA_CF_PRIORITY, prefs.getBoolean(EXTRA_CF_PRIORITY, true))
+            ?: prefs.getBoolean(EXTRA_CF_PRIORITY, true)
         smartStandby = intent?.getBooleanExtra(EXTRA_SMART_STANDBY, prefs.getBoolean(EXTRA_SMART_STANDBY, true))
             ?: prefs.getBoolean(EXTRA_SMART_STANDBY, true)
         val poolSize = (intent?.getIntExtra(EXTRA_POOL_SIZE, -1) ?: -1)
@@ -136,23 +137,14 @@ class ProxyService : Service() {
                 ?: prefs.getString(EXTRA_DC_IPS, "").orEmpty(),
         ).takeIf(ProxyConfig::isValidDcMappings).orEmpty()
 
-        val webProxyEnabled = intent?.getBooleanExtra(EXTRA_WEB_PROXY_ENABLED, prefs.getBoolean(EXTRA_WEB_PROXY_ENABLED, false))
-            ?: prefs.getBoolean(EXTRA_WEB_PROXY_ENABLED, false)
-        val webProxyServer = (intent?.getStringExtra(EXTRA_WEB_PROXY_SERVER)
-            ?: prefs.getString(EXTRA_WEB_PROXY_SERVER, "").orEmpty()).trim()
-        val webProxySecret = (intent?.getStringExtra(EXTRA_WEB_PROXY_SECRET)
-            ?: prefs.getString(EXTRA_WEB_PROXY_SECRET, "").orEmpty()).trim()
-
         prefs.edit {
             putString(EXTRA_CF_WORKER_DOMAIN, cfDomain)
             putString(EXTRA_CF_DOMAIN, cfDomain)
             putBoolean(EXTRA_CF_ENABLED, cfEnabled)
+            putBoolean(EXTRA_CF_PRIORITY, cfPriority)
             putBoolean(EXTRA_SMART_STANDBY, smartStandby)
             putString(EXTRA_POOL_SIZE, poolSize.toString())
             putString(EXTRA_DC_IPS, dcIps)
-            putBoolean(EXTRA_WEB_PROXY_ENABLED, webProxyEnabled)
-            putString(EXTRA_WEB_PROXY_SERVER, webProxyServer)
-            putString(EXTRA_WEB_PROXY_SECRET, webProxySecret)
         }
 
         if (startTime == 0L) startTime = System.currentTimeMillis()
@@ -165,11 +157,9 @@ class ProxyService : Service() {
             val paramsChanged = (providedSecret != null && providedSecret != lastSecret) ||
                 cfDomain != lastCfDomain ||
                 cfEnabled != lastCfEnabled ||
+                cfPriority != lastCfPriority ||
                 poolSize != lastPoolSize ||
-                dcIps != lastDcIps ||
-                webProxyEnabled != lastWebProxyEnabled ||
-                webProxyServer != lastWebProxyServer ||
-                webProxySecret != lastWebProxySecret
+                dcIps != lastDcIps
             if (paramsChanged && nativeInitializing.compareAndSet(false, true)) {
                 ProxyLogger.i("Parameters changed while running -> hot restarting proxy core")
                 ProxyServiceStatus.isStarting = true
@@ -180,11 +170,9 @@ class ProxyService : Service() {
                         providedSecret,
                         cfDomain,
                         cfEnabled,
+                        cfPriority,
                         poolSize,
                         dcIps,
-                        webProxyEnabled,
-                        webProxyServer,
-                        webProxySecret,
                         startId,
                     )
                 }
@@ -195,11 +183,9 @@ class ProxyService : Service() {
                 providedSecret,
                 cfDomain,
                 cfEnabled,
+                cfPriority,
                 poolSize,
                 dcIps,
-                webProxyEnabled,
-                webProxyServer,
-                webProxySecret,
                 startId,
             )
         }
@@ -232,6 +218,7 @@ class ProxyService : Service() {
     override fun onTimeout(startId: Int, fgsType: Int) {
         ProxyLogger.e("Foreground service timed out: type=$fgsType startId=$startId")
         stopNativeProxy()
+        releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelfResult(startId)
     }
@@ -243,7 +230,8 @@ class ProxyService : Service() {
             } else {
                 0
             }
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification("starting"), type)
+            val startMsg = if (isRuLocale) "запуск..." else "starting..."
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(startMsg), type)
             true
         }.getOrElse {
             ProxyLogger.e("Unable to promote proxy service to foreground", it)
@@ -255,11 +243,9 @@ class ProxyService : Service() {
         providedSecret: String?,
         cfDomain: String,
         cfEnabled: Boolean,
+        cfPriority: Boolean,
         poolSize: Int,
         dcIps: String,
-        webProxyEnabled: Boolean,
-        webProxyServer: String,
-        webProxySecret: String,
         startId: Int,
     ) {
         Thread({
@@ -277,11 +263,9 @@ class ProxyService : Service() {
                     secret,
                     cfDomain,
                     cfEnabled,
+                    cfPriority,
                     poolSize,
                     dcIps,
-                    webProxyEnabled,
-                    webProxyServer,
-                    webProxySecret,
                 )
             } catch (t: Throwable) {
                 nativeInitializing.set(false)
@@ -299,11 +283,9 @@ class ProxyService : Service() {
         secret: String,
         cfDomain: String,
         cfEnabled: Boolean,
+        cfPriority: Boolean,
         poolSize: Int,
         dcIps: String,
-        webProxyEnabled: Boolean,
-        webProxyServer: String,
-        webProxySecret: String,
     ) {
         nativeRunning.set(true)
         nativeInitializing.set(false)
@@ -315,39 +297,45 @@ class ProxyService : Service() {
         lastWsAttemptFailures = 0
         lastDownBytes = 0
         degradedStatsCycles = 0
+        TrafficStatsManager.resetBaseline()
         ProxyServiceStatus.isRunning = false
         ProxyServiceStatus.isStarting = true
         ProxyServiceStatus.startTime = startTime
         ProxyServiceStatus.lastPing = lastPing
         AppDiagnostics.setProcessState(this, "proxy=starting")
-        ProxyLogger.i(if (webProxyEnabled) "Starting Telegram Web Proxy (tproxy-v1) engine" else "Starting Rust/Tokio proxy core")
+        ProxyLogger.i("Starting Rust/Tokio proxy core")
         lastSecret = secret
         lastCfDomain = cfDomain
         lastCfEnabled = cfEnabled
+        lastCfPriority = cfPriority
         lastPoolSize = poolSize
         lastDcIps = dcIps
-        lastWebProxyEnabled = webProxyEnabled
-        lastWebProxyServer = webProxyServer
-        lastWebProxySecret = webProxySecret
         acquireWakeLock()
 
         Thread({
             try {
-                val result = synchronized(nativeCallLock) {
+                // Wait for any in-flight stop from a previous ProxyService instance before starting
+                val pendingStop = activeStopDeferred
+                if (pendingStop != null && !pendingStop.isCompleted) {
+                    val waitStart = System.currentTimeMillis()
+                    while (!pendingStop.isCompleted && System.currentTimeMillis() - waitStart < 3_000L) {
+                        Thread.sleep(25)
+                    }
+                }
+                val result = synchronized(NATIVE_CALL_LOCK) {
                     configureAndStartNative(
                         secret,
                         cfDomain,
                         cfEnabled,
+                        cfPriority,
                         poolSize,
                         dcIps,
-                        webProxyEnabled,
-                        webProxyServer,
-                        webProxySecret,
                     )
                 }
                 if (result != 0) {
                     ProxyLogger.e("Proxy core failed to start: code $result")
                     nativeRunning.set(false)
+                    releaseWakeLock()
                     ProxyServiceStatus.isRunning = false
                     ProxyServiceStatus.isStarting = false
                     ProxyTileService.requestTileUpdate(this@ProxyService)
@@ -362,6 +350,7 @@ class ProxyService : Service() {
             } catch (t: Throwable) {
                 ProxyLogger.e("Proxy core startup crashed", t)
                 nativeRunning.set(false)
+                releaseWakeLock()
                 ProxyServiceStatus.isRunning = false
                 ProxyServiceStatus.isStarting = false
                 ProxyTileService.requestTileUpdate(this@ProxyService)
@@ -380,38 +369,19 @@ class ProxyService : Service() {
         secret: String,
         cfDomain: String,
         cfEnabled: Boolean,
+        cfPriority: Boolean,
         poolSize: Int,
         dcIps: String,
-        webProxyEnabled: Boolean,
-        webProxyServer: String,
-        webProxySecret: String,
     ): Int {
-        if (webProxyEnabled) {
-            val endpoint = WebProxyProtocol.parseEndpointInput(
-                serverInput = webProxyServer,
-                secretInput = webProxySecret.ifBlank { secret },
-            )
-            if (endpoint == null) {
-                ProxyLogger.e("Invalid Web Proxy server or secret configuration")
-                return -2
-            }
-            return WebProxyEngine.start(
-                bindHost = ProxyConfig.HOST,
-                bindPort = ProxyConfig.PORT,
-                endpoint = endpoint,
-            )
-        }
-
-        WebProxyEngine.stop()
         NativeProxy.setPoolSize(poolSize)
         NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
-        NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = true, userDomain = cfDomain)
+        NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = cfPriority, userDomain = cfDomain)
         return NativeProxy.startProxy(
             host = ProxyConfig.HOST,
             port = ProxyConfig.PORT,
             dcIps = ProxyConfig.dcMappingsForNative(dcIps),
             secret = secret,
-            verbose = true,
+            verbose = BuildConfig.DEBUG,
         )
     }
 
@@ -429,26 +399,22 @@ class ProxyService : Service() {
                 if (debounceMs > 0) delay(debounceMs)
                 if (!nativeRunning.get() || destroyed.get() || lastSecret.isBlank()) return@launch
                 ProxyLogger.i("$reason; rebuilding proxy routes and WS pool")
-                updateNotification("reconnecting", force = true)
+                updateNotification(if (isRuLocale) "переподключение..." else "reconnecting...", force = true)
                 var result = -1
                 for (attempt in 0 until CORE_RESTART_ATTEMPTS) {
                     result = runCatching {
-                        synchronized(nativeCallLock) {
-                            if (lastWebProxyEnabled) {
-                                WebProxyEngine.stop()
-                            } else {
-                                NativeProxy.stopProxy()
-                            }
+                        synchronized(NATIVE_CALL_LOCK) {
+                            recordFinalStatsLocked()
+                            NativeProxy.stopProxy()
+                            TrafficStatsManager.resetBaseline()
                             if (!nativeRunning.get() || destroyed.get()) return@synchronized -1
                             configureAndStartNative(
                                 lastSecret,
                                 lastCfDomain,
                                 lastCfEnabled,
+                                lastCfPriority,
                                 lastPoolSize,
                                 lastDcIps,
-                                lastWebProxyEnabled,
-                                lastWebProxyServer,
-                                lastWebProxySecret,
                             )
                         }
                     }.getOrElse {
@@ -461,10 +427,10 @@ class ProxyService : Service() {
                 if (result == 0) {
                     consecutivePortFailures = 0
                     ProxyLogger.i("Proxy routes and connection pool recovered")
-                    updateNotification("service online", force = true)
+                    updateNotification(if (isRuLocale) "онлайн" else "service online", force = true)
                 } else if (!destroyed.get()) {
                     ProxyLogger.e("Proxy recovery is pending after $CORE_RESTART_ATTEMPTS attempts: code $result")
-                    updateNotification("recovery pending", force = true)
+                    updateNotification(if (isRuLocale) "ожидание сети..." else "recovery pending", force = true)
                 }
             } finally {
                 restartInProgress.set(false)
@@ -491,15 +457,15 @@ class ProxyService : Service() {
         watchdogJob = serviceScope.launch {
             delay(3000)
             if (!nativeRunning.get()) return@launch
-            val online = isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 2000)
+            val online = isEngineListening()
             lastPing = if (online) 0 else -1
             ProxyServiceStatus.lastPing = lastPing
             if (online) {
                 ProxyLogger.i("Watchdog: local proxy port is listening")
-                updateNotification("service online", force = true)
+                updateNotification(if (isRuLocale) "онлайн" else "service online", force = true)
             } else {
                 ProxyLogger.w("Watchdog: proxy port is not responding yet")
-                updateNotification("service starting", force = true)
+                updateNotification(if (isRuLocale) "запуск..." else "service starting", force = true)
             }
         }
     }
@@ -509,35 +475,49 @@ class ProxyService : Service() {
         statsJob = serviceScope.launch {
             while (isActive) {
                 val isStandby = smartStandby && isScreenOff && (System.currentTimeMillis() - lastTrafficActiveAtMs > 10 * 60 * 1000L)
-                val pollInterval = if (isStandby) 20_000L else 3_000L
+                val pollInterval = if (isStandby) 30_000L else 3_000L
                 delay(pollInterval)
                 if (!nativeRunning.get()) continue
-                renewWakeLockIfNeeded()
-                val online = isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 700)
+                if (isStandby) {
+                    releaseWakeLock()
+                } else {
+                    renewWakeLockIfNeeded()
+                }
+                val online = isEngineListening()
+                val stats = runCatching {
+                    synchronized(NATIVE_CALL_LOCK) {
+                        NativeProxy.getStats().orEmpty()
+                    }
+                }.getOrDefault("")
+
                 consecutivePortFailures = if (online) 0 else consecutivePortFailures + 1
                 lastPing = if (online) 0 else -1
                 ProxyServiceStatus.lastPing = lastPing
-                val stats = runCatching {
-                    synchronized(nativeCallLock) {
-                        if (lastWebProxyEnabled) {
-                            WebProxyEngine.getStats()
-                        } else {
-                            NativeProxy.getStats().orEmpty()
-                        }
-                    }
-                }.getOrDefault("")
+
                 if (stats.isNotBlank()) {
-                    ProxyLogger.d("Rust stats: $stats")
+                    ProxyLogger.d("Proxy stats: $stats")
                     inspectTransportHealth(stats)
                     val downB = statLong(stats, "down_b")
                     val upB = statLong(stats, "up_b")
                     TrafficStatsManager.recordTraffic(this@ProxyService, downB, upB)
                 }
-                updateNotification(if (online) compactStats(stats) else "service N/A")
+                val fallbackOffline = if (isRuLocale) "недоступен" else "service N/A"
+                updateNotification(if (online) compactStats(stats) else fallbackOffline)
                 if (consecutivePortFailures >= PORT_FAILURES_BEFORE_RESTART) {
                     consecutivePortFailures = 0
                     scheduleCoreRestart("Watchdog detected an unresponsive local proxy")
                 }
+            }
+        }
+    }
+
+    private fun recordFinalStatsLocked() {
+        runCatching {
+            val stats = NativeProxy.getStats().orEmpty()
+            if (stats.isNotBlank()) {
+                val downB = statLong(stats, "down_b")
+                val upB = statLong(stats, "up_b")
+                TrafficStatsManager.recordTraffic(this@ProxyService, downB, upB)
             }
         }
     }
@@ -548,12 +528,14 @@ class ProxyService : Service() {
             completed.complete(Unit)
             return completed
         }
+        activeStopDeferred = completed
         ProxyLogger.i("Stopping proxy core")
         Thread({
             try {
-                synchronized(nativeCallLock) {
-                    WebProxyEngine.stop()
+                synchronized(NATIVE_CALL_LOCK) {
+                    recordFinalStatsLocked()
                     NativeProxy.stopProxy()
+                    TrafficStatsManager.resetBaseline()
                 }
             } catch (t: Throwable) {
                 ProxyLogger.w("Proxy core stop failed", t)
@@ -572,11 +554,15 @@ class ProxyService : Service() {
     }
 
     private fun compactStats(stats: String): String {
-        if (stats.isBlank()) return "service online"
+        if (stats.isBlank()) return if (isRuLocale) "онлайн" else "service online"
         val active = stats.substringAfter("active=", "").substringBefore(" ").ifBlank { "0" }
         val up = stats.substringAfter("up=", "").substringBefore(" ").ifBlank { "0B" }
         val down = stats.substringAfter("down=", "").substringBefore(" ").ifBlank { "0B" }
-        return "active=$active up=$up down=$down"
+        return if (isRuLocale) {
+            "акт:$active ↑$up ↓$down"
+        } else {
+            "active=$active up=$up down=$down"
+        }
     }
 
     private fun inspectTransportHealth(stats: String) {
@@ -601,8 +587,8 @@ class ProxyService : Service() {
 
         if (routeFailureDelta > 0) {
             val nativeReason = runCatching {
-                synchronized(nativeCallLock) {
-                    if (lastWebProxyEnabled) WebProxyEngine.getLastError() else NativeProxy.getLastError().orEmpty()
+                synchronized(NATIVE_CALL_LOCK) {
+                    NativeProxy.getLastError().orEmpty()
                 }
             }.getOrDefault("")
             ProxyLogger.e(
@@ -632,6 +618,14 @@ class ProxyService : Service() {
         .substringBefore(' ')
         .toLongOrNull()
         ?: 0L
+
+    private fun isEngineListening(): Boolean = runCatching {
+        synchronized(NATIVE_CALL_LOCK) {
+            NativeProxy.isListening()
+        }
+    }.getOrElse {
+        isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 700)
+    }
 
     private fun isPortOpen(host: String, port: Int, timeoutMs: Int): Boolean {
         return runCatching {
@@ -706,13 +700,14 @@ class ProxyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val uptime = formatUptime(System.currentTimeMillis() - startTime)
-        val title = if (lastWebProxyEnabled) "TG Web Proxy active" else "TG WS Proxy active"
+        val title = if (isRuLocale) "TG WS Proxy активен" else "TG WS Proxy active"
+        val stopLabel = if (isRuLocale) "Остановить" else "Stop"
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText("${ProxyConfig.HOST}:${ProxyConfig.PORT} | $uptime | $content")
             .setContentIntent(pendingIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, stopLabel, stopIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
@@ -721,7 +716,8 @@ class ProxyService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(CHANNEL_ID, "Proxy", NotificationManager.IMPORTANCE_LOW).apply {
+        val channelName = if (isRuLocale) "Прокси-сервис" else "Proxy Service"
+        val channel = NotificationChannel(CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_LOW).apply {
             setShowBadge(false)
             setSound(null, null)
             enableVibration(false)
@@ -735,17 +731,18 @@ class ProxyService : Service() {
     }
 
     companion object {
+        private val NATIVE_CALL_LOCK = Any()
+        @Volatile private var activeStopDeferred: CompletableDeferred<Unit>? = null
+
         const val ACTION_STOP = "com.tgwsproxy.android.STOP"
         const val EXTRA_SECRET = "secret"
         const val EXTRA_CF_WORKER_DOMAIN = "cf_worker_domain"
         const val EXTRA_CF_DOMAIN = "cf_domain"
         const val EXTRA_CF_ENABLED = "cf_enabled"
+        const val EXTRA_CF_PRIORITY = "cf_priority"
         const val EXTRA_POOL_SIZE = "pool_size"
         const val EXTRA_DC_IPS = "dc_ips"
         const val EXTRA_SMART_STANDBY = "smart_standby"
-        const val EXTRA_WEB_PROXY_ENABLED = "web_proxy_enabled"
-        const val EXTRA_WEB_PROXY_SERVER = "web_proxy_server"
-        const val EXTRA_WEB_PROXY_SECRET = "web_proxy_secret"
         private const val PREFS = "proxy"
         private const val CHANNEL_ID = "proxy"
         private const val NOTIFICATION_ID = 1001

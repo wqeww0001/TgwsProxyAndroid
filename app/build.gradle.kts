@@ -18,8 +18,8 @@ android {
         applicationId = "com.tgwsproxy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 31
-        versionName = "2.5.2"
+        versionCode = 32
+        versionName = "2.5.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -49,7 +49,11 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             val releaseSigning = signingConfigs.getByName("release")
-            signingConfig = if (releaseSigning.storeFile?.exists() == true && !releaseSigning.storePassword.isNullOrBlank()) {
+            val hasReleaseKey = releaseSigning.storeFile?.exists() == true && !releaseSigning.storePassword.isNullOrBlank()
+            if (!hasReleaseKey && System.getenv("RELEASE_REQUIRED") == "true") {
+                throw GradleException("RELEASE_REQUIRED=true, but release signing keystore or password is missing")
+            }
+            signingConfig = if (hasReleaseKey) {
                 releaseSigning
             } else {
                 signingConfigs.getByName("debug")
@@ -66,6 +70,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     lint {
         // Gradle 9.7 is currently only a milestone/snapshot; keep the latest stable wrapper.

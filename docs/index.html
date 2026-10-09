@@ -1,0 +1,1792 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TG WS Proxy для Android — Локальный MTProto WebSocket прокси без VPN</title>
+  <meta name="description" content="Бесплатный open-source прокси для Telegram на Android. Локальный мост 127.0.0.1:1443 на базе Rust (tokio + rustls). Работает без VPN, без root и без расхода батареи." />
+  <meta property="og:title" content="TG WS Proxy для Android — Telegram без VPN и без просадки скорости" />
+  <meta property="og:description" content="Локальный MTProto-over-WebSocket прокси на Rust (libtgwsproxy.so) на 127.0.0.1:1443. Только для Telegram, не трогает другие приложения." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://github.com/wqeww0001/TgwsProxyAndroid" />
+  <meta name="theme-color" content="#080C14" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-base: #080C14;
+      --bg-surface: #0E1524;
+      --bg-elevated: #141E32;
+      --bg-glass: rgba(14, 21, 36, 0.82);
+      --border-subtle: #1D2B45;
+      --border-highlight: #2B426B;
+      --text-primary: #ECF2FA;
+      --text-secondary: #93A7C4;
+      --text-muted: #5F7494;
+      --accent-tg: #2AABEE;
+      --accent-tg-hover: #1E96D6;
+      --accent-tg-soft: rgba(42, 171, 238, 0.14);
+      --accent-ok: #10B981;
+      --accent-ok-soft: rgba(16, 185, 129, 0.14);
+      --accent-warn: #F59E0B;
+      --accent-purple: #8B5CF6;
+      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --container-max: 1200px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      background-image:
+        radial-gradient(circle at 18% 8%, rgba(42, 171, 238, 0.11), transparent 36%),
+        radial-gradient(circle at 84% 16%, rgba(16, 185, 129, 0.08), transparent 32%),
+        linear-gradient(180deg, rgba(29, 43, 69, 0.18) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(29, 43, 69, 0.18) 1px, transparent 1px);
+      background-size: 100% 100%, 100% 100%, 48px 48px, 48px 48px;
+      background-position: 0 0, 0 0, -1px -1px, -1px -1px;
+      overflow-x: hidden;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .container {
+      width: 100%;
+      max-width: var(--container-max);
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Top Telemetry & Views Header */
+    .telemetry-bar {
+      background: rgba(8, 12, 20, 0.9);
+      border-bottom: 1px solid var(--border-subtle);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      padding: 8px 0;
+    }
+
+    .telemetry-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .telemetry-group {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .telemetry-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-ok);
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
+      animation: pulse 2.2s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.18); opacity: 0.72; }
+    }
+
+    .telemetry-value {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .telemetry-badge {
+      background: var(--accent-ok-soft);
+      color: var(--accent-ok);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* Navbar */
+    .navbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      background: rgba(8, 12, 20, 0.82);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .navbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 68px;
+      gap: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 11px;
+      background: linear-gradient(135deg, var(--accent-tg), #1668B8);
+      display: grid;
+      place-items: center;
+      box-shadow: 0 6px 20px rgba(42, 171, 238, 0.28);
+    }
+
+    .brand-version {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-tg);
+      background: var(--accent-tg-soft);
+      border: 1px solid rgba(42, 171, 238, 0.32);
+      padding: 2px 8px;
+      border-radius: 99px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .nav-links a:hover {
+      color: var(--text-primary);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      font-family: var(--font-sans);
+      font-weight: 600;
+      font-size: 14px;
+      padding: 11px 18px;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .btn:active {
+      transform: translateY(1px);
+    }
+
+    .btn-primary {
+      background: var(--accent-tg);
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(42, 171, 238, 0.25);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-tg-hover);
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border-color: var(--border-subtle);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--border-highlight);
+      background: var(--bg-elevated);
+    }
+
+    .btn-lg {
+      padding: 15px 24px;
+      font-size: 15px;
+      border-radius: 14px;
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 64px 0 80px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 48px;
+      align-items: center;
+    }
+
+    .eyebrow-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 13px;
+      border-radius: 99px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-highlight);
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--accent-tg);
+      margin-bottom: 22px;
+    }
+
+    .hero h1 {
+      font-size: clamp(34px, 4.6vw, 54px);
+      font-weight: 800;
+      line-height: 1.08;
+      letter-spacing: -0.03em;
+      margin-bottom: 20px;
+    }
+
+    .hero-lead {
+      font-size: 17.5px;
+      color: var(--text-secondary);
+      max-width: 60ch;
+      margin-bottom: 28px;
+    }
+
+    .hero-cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    /* Live Views & Stats Strip in Hero */
+    .views-card-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 16px;
+      max-width: 580px;
+    }
+
+    .stat-cell {
+      padding: 4px 8px;
+      border-right: 1px solid var(--border-subtle);
+    }
+
+    .stat-cell:last-child {
+      border-right: none;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    .stat-num {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-sub {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent-ok);
+      margin-top: 2px;
+    }
+
+    /* Interactive Android App Simulator */
+    .phone-frame-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .theme-switcher-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      padding: 5px;
+      border-radius: 99px;
+      font-size: 12px;
+    }
+
+    .theme-chip {
+      padding: 5px 12px;
+      border-radius: 99px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      font-family: var(--font-sans);
+      transition: all 0.15s ease;
+    }
+
+    .theme-chip.active {
+      background: var(--accent-tg);
+      color: #fff;
+    }
+
+    .phone-mockup {
+      width: 100%;
+      max-width: 370px;
+      border-radius: 34px;
+      background: #0F172A;
+      border: 6px solid #1E293B;
+      box-shadow: 0 28px 60px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+      transition: background-color 0.25s ease, color 0.25s ease;
+      position: relative;
+    }
+
+    .phone-mockup[data-app-theme="light"] {
+      background: #F8FAFC;
+      color: #0F172A;
+      border-color: #CBD5E1;
+    }
+
+    .phone-mockup[data-app-theme="aurora"] {
+      background: #071A1E;
+      color: #E2F8F5;
+      border-color: #134E4A;
+    }
+
+    .phone-mockup[data-app-theme="sunset"] {
+      background: #1C1018;
+      color: #FDE8E8;
+      border-color: #4C1D3D;
+    }
+
+    .phone-statusbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 22px 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      opacity: 0.75;
+    }
+
+    .phone-body {
+      padding: 10px 16px 14px;
+      min-height: 500px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .app-topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .phone-mockup[data-app-theme="light"] .app-topbar {
+      border-bottom-color: #E2E8F0;
+    }
+
+    .app-brand-mini {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .app-badge-tg {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--accent-tg);
+      color: #fff;
+      font-weight: 800;
+      font-size: 11px;
+      display: grid;
+      place-items: center;
+    }
+
+    .phone-mockup[data-app-theme="aurora"] .app-badge-tg {
+      background: #2EE59D;
+      color: #052E1E;
+    }
+
+    .phone-mockup[data-app-theme="sunset"] .app-badge-tg {
+      background: #FF7E5F;
+      color: #361106;
+    }
+
+    .app-title {
+      font-weight: 800;
+      font-size: 14px;
+      line-height: 1.15;
+    }
+
+    .app-subtitle {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      opacity: 0.7;
+    }
+
+    .app-status-pill {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 3px 9px;
+      border-radius: 99px;
+      background: rgba(16, 185, 129, 0.16);
+      color: #10B981;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .app-status-pill.stopped {
+      background: rgba(148, 163, 184, 0.16);
+      color: #94A3B8;
+    }
+
+    .app-card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 13px;
+      margin-bottom: 10px;
+    }
+
+    .phone-mockup[data-app-theme="light"] .app-card {
+      background: #FFFFFF;
+      border-color: #E2E8F0;
+    }
+
+    .app-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .app-card-label {
+      font-size: 11px;
+      opacity: 0.72;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .app-tag-mono {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      font-weight: 600;
+    }
+
+    .phone-mockup[data-app-theme="light"] .app-tag-mono {
+      background: #F1F5F9;
+      color: #334155;
+    }
+
+    .hero-traffic-box {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin: 10px 0;
+      font-family: var(--font-mono);
+    }
+
+    .phone-mockup[data-app-theme="light"] .hero-traffic-box {
+      background: #F1F5F9;
+    }
+
+    .app-btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .app-btn-outline {
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: transparent;
+      color: inherit;
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .phone-mockup[data-app-theme="light"] .app-btn-outline {
+      border-color: #CBD5E1;
+    }
+
+    .app-btn-danger {
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: none;
+      background: #EF4444;
+      color: #fff;
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .app-btn-danger.start-mode {
+      background: #10B981;
+    }
+
+    .app-tiles-2col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .app-stat-tile {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      padding: 10px 12px;
+    }
+
+    .phone-mockup[data-app-theme="light"] .app-stat-tile {
+      background: #FFFFFF;
+      border-color: #E2E8F0;
+    }
+
+    .pool-chip-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .pool-chip {
+      padding: 6px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: transparent;
+      color: inherit;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .pool-chip.active {
+      background: rgba(42, 171, 238, 0.2);
+      border-color: var(--accent-tg);
+      color: var(--accent-tg);
+    }
+
+    .app-tg-btn {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 11px;
+      border: none;
+      background: var(--accent-tg);
+      color: #fff;
+      font-weight: 700;
+      font-size: 12.5px;
+      cursor: pointer;
+      margin-top: 2px;
+    }
+
+    .phone-mockup[data-app-theme="aurora"] .app-tg-btn {
+      background: #2EE59D;
+      color: #052E1E;
+    }
+
+    .phone-mockup[data-app-theme="sunset"] .app-tg-btn {
+      background: #FF7E5F;
+      color: #361106;
+    }
+
+    .app-bottom-nav {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 8px;
+      margin-top: 8px;
+    }
+
+    .phone-mockup[data-app-theme="light"] .app-bottom-nav {
+      border-top-color: #E2E8F0;
+    }
+
+    .app-nav-item {
+      background: none;
+      border: none;
+      color: inherit;
+      opacity: 0.55;
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .app-nav-item.active {
+      opacity: 1;
+      color: var(--accent-tg);
+    }
+
+    .phone-mockup[data-app-theme="aurora"] .app-nav-item.active {
+      color: #2EE59D;
+    }
+
+    .phone-mockup[data-app-theme="sunset"] .app-nav-item.active {
+      color: #FF7E5F;
+    }
+
+    .app-log-box {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      background: rgba(0, 0, 0, 0.35);
+      border-radius: 12px;
+      padding: 10px;
+      height: 270px;
+      overflow-y: auto;
+      color: #A7F3D0;
+    }
+
+    .phone-mockup[data-app-theme="light"] .app-log-box {
+      background: #0F172A;
+      color: #A7F3D0;
+    }
+
+    /* Section Styling */
+    section {
+      padding: 72px 0;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .section-header {
+      max-width: 680px;
+      margin-bottom: 44px;
+    }
+
+    .section-title {
+      font-size: clamp(26px, 3.2vw, 38px);
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      margin-bottom: 12px;
+    }
+
+    .section-desc {
+      color: var(--text-secondary);
+      font-size: 16px;
+    }
+
+    /* Packet Architecture Pipeline */
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .pipeline-step {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 20px;
+      position: relative;
+    }
+
+    .step-tag {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent-tg);
+      background: var(--accent-tg-soft);
+      padding: 3px 8px;
+      border-radius: 6px;
+      display: inline-block;
+      margin-bottom: 12px;
+    }
+
+    .pipeline-step h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .pipeline-step p {
+      font-size: 13.5px;
+      color: var(--text-secondary);
+    }
+
+    /* Comparison Table: VPN vs TG WS Proxy */
+    .comparison-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      overflow: hidden;
+    }
+
+    table.comp-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 14px;
+    }
+
+    .comp-table th,
+    .comp-table td {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .comp-table th {
+      background: var(--bg-elevated);
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .comp-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .good-val {
+      color: var(--accent-ok);
+      font-weight: 600;
+    }
+
+    .bad-val {
+      color: #F87171;
+    }
+
+    /* Security Audit Bento Grid */
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+
+    .bento-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .bento-card.wide {
+      grid-column: span 2;
+    }
+
+    .bento-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--accent-tg-soft);
+      color: var(--accent-tg);
+      display: grid;
+      place-items: center;
+      margin-bottom: 16px;
+      font-family: var(--font-mono);
+      font-weight: 700;
+    }
+
+    .bento-card h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .bento-card p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 14px;
+    }
+
+    .code-snippet {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      padding: 10px 12px;
+      border-radius: 10px;
+      color: #93C5FD;
+      overflow-x: auto;
+    }
+
+    /* Promo & Share Kit for Growth */
+    .promo-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 24px;
+    }
+
+    .promo-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      padding: 24px;
+    }
+
+    .promo-textarea {
+      width: 100%;
+      min-height: 155px;
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 14px;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13.5px;
+      line-height: 1.5;
+      resize: vertical;
+      margin: 12px 0;
+    }
+
+    .views-widget-large {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      background: linear-gradient(160deg, #0E192D 0%, #09101D 100%);
+      border: 1px solid var(--border-highlight);
+      border-radius: 18px;
+      padding: 24px;
+    }
+
+    .big-counter-num {
+      font-family: var(--font-mono);
+      font-size: 42px;
+      font-weight: 800;
+      color: var(--accent-ok);
+      letter-spacing: -0.03em;
+      font-variant-numeric: tabular-nums;
+      margin: 8px 0;
+    }
+
+    .counter-meta-list {
+      list-style: none;
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: grid;
+      gap: 8px;
+      margin: 14px 0;
+    }
+
+    .counter-meta-list li {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px dashed var(--border-subtle);
+      padding-bottom: 6px;
+    }
+
+    footer {
+      border-top: 1px solid var(--border-subtle);
+      padding: 40px 0;
+      color: var(--text-muted);
+      font-size: 13.5px;
+    }
+
+    .footer-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--accent-ok);
+      padding: 12px 18px;
+      border-radius: 12px;
+      font-size: 13.5px;
+      font-weight: 600;
+      box-shadow: 0 14px 32px rgba(0, 0, 0, 0.5);
+      transform: translateY(120%);
+      opacity: 0;
+      transition: all 0.25s ease;
+      z-index: 100;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    @media (max-width: 960px) {
+      .hero-grid,
+      .promo-grid {
+        grid-template-columns: 1fr;
+      }
+      .pipeline-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .bento-grid {
+        grid-template-columns: 1fr;
+      }
+      .bento-card.wide {
+        grid-column: span 1;
+      }
+      .nav-links {
+        display: none;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .pipeline-grid,
+      .views-card-strip {
+        grid-template-columns: 1fr;
+      }
+      .stat-cell {
+        border-right: none;
+        border-bottom: 1px solid var(--border-subtle);
+        padding-bottom: 10px;
+      }
+      .stat-cell:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Live Telemetry & Site Views Top Bar -->
+  <div class="telemetry-bar">
+    <div class="container telemetry-inner">
+      <div class="telemetry-group">
+        <span class="telemetry-item">
+          <span class="pulse-dot"></span>
+          <span>ПРОСМОТРЫ САЙТА:</span>
+          <strong class="telemetry-value" id="top-site-views">—</strong>
+          <span class="telemetry-badge" id="visit-status-badge">+1 ваш визит</span>
+        </span>
+        <span class="telemetry-item">
+          <span>СКАЧИВАНИЯ APK:</span>
+          <strong class="telemetry-value" id="top-apk-downloads">—</strong>
+        </span>
+        <span class="telemetry-item">
+          <span>GITHUB STARS:</span>
+          <strong class="telemetry-value" id="top-gh-stars">—</strong>
+        </span>
+      </div>
+      <div class="telemetry-group">
+        <span class="telemetry-item">
+          <span>ЯДРО:</span>
+          <strong class="telemetry-value">Rust 2021 (libtgwsproxy.so • tokio + rustls)</strong>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Navigation -->
+  <header class="navbar">
+    <div class="container navbar-inner">
+      <a href="#" class="brand">
+        <div class="brand-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 2L11 13"></path>
+            <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
+          </svg>
+        </div>
+        <span>TG WS Proxy</span>
+        <span class="brand-version" id="nav-version-badge">v2.5.3</span>
+      </a>
+
+      <nav class="nav-links">
+        <a href="#how-it-works">Как устроен</a>
+        <a href="#vs-vpn">Почему не VPN</a>
+        <a href="#stats">Живая статистика</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a href="https://github.com/wqeww0001/TgwsProxyAndroid" target="_blank" rel="noopener" class="btn btn-secondary">
+          GitHub
+        </a>
+        <a href="https://github.com/wqeww0001/TgwsProxyAndroid/releases/latest" target="_blank" rel="noopener" class="btn btn-primary" id="nav-download-btn">
+          Скачать APK
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <main>
+    <section class="hero" style="border-top: none;">
+      <div class="container hero-grid">
+        <div>
+          <div class="eyebrow-pill">
+            <span>Локальный мост 127.0.0.1:1443 • Без VPN и Root</span>
+          </div>
+          <h1>Прямой WebSocket-мост для Telegram на Android</h1>
+          <p class="hero-lead">
+            <strong>TG WS Proxy</strong> поднимает локальный MTProto-сервер на вашем смартфоне и заворачивает трафик Telegram в защищённый TLS 1.3 WebSocket (<code>kws*.web.telegram.org</code>) с резервным пулом Cloudflare CDN и TCP fallback. Банковские приложения, игры и Госуслуги продолжают работать напрямую без VPN.
+          </p>
+
+          <div class="hero-cta-row">
+            <a href="https://github.com/wqeww0001/TgwsProxyAndroid/releases/latest" target="_blank" rel="noopener" class="btn btn-primary btn-lg" id="hero-download-btn">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span id="hero-download-text">Скачать APK v2.5.3</span>
+            </a>
+            <button type="button" class="btn btn-secondary btn-lg" onclick="shareProject()">
+              Поделиться в Telegram
+            </button>
+          </div>
+
+          <!-- Live Views & Downloads Counter Strip -->
+          <div class="views-card-strip" aria-label="Статистика посещений и загрузок">
+            <div class="stat-cell">
+              <div class="stat-label">
+                <span class="pulse-dot"></span>
+                <span>Просмотры сайта</span>
+              </div>
+              <div class="stat-num" id="hero-site-views">—</div>
+              <div class="stat-sub" id="hero-views-sub">Счётчик в реальном времени</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">Скачиваний релизов</div>
+              <div class="stat-num" id="hero-apk-downloads">—</div>
+              <div class="stat-sub" id="hero-release-tag">GitHub Releases API</div>
+            </div>
+            <div class="stat-cell">
+              <div class="stat-label">Потребление ОЗУ</div>
+              <div class="stat-num">~14 МБ</div>
+              <div class="stat-sub">Smart Standby в фоне</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Interactive App Preview on the Right -->
+        <div class="phone-frame-wrap">
+          <div class="theme-switcher-bar" role="group" aria-label="Темы интерфейса приложения">
+            <button class="theme-chip active" onclick="setAppTheme('dark', this)">Тёмная</button>
+            <button class="theme-chip" onclick="setAppTheme('light', this)">Светлая</button>
+            <button class="theme-chip" onclick="setAppTheme('aurora', this)">Аврора</button>
+            <button class="theme-chip" onclick="setAppTheme('sunset', this)">Закат</button>
+          </div>
+
+          <div class="phone-mockup" id="app-simulator" data-app-theme="dark">
+            <div class="phone-statusbar">
+              <span>20:58</span>
+              <span>127.0.0.1:1443 • 5G</span>
+            </div>
+
+            <div class="phone-body">
+              <div>
+                <div class="app-topbar">
+                  <div class="app-brand-mini">
+                    <div class="app-badge-tg">TG</div>
+                    <div>
+                      <div class="app-title">TgwsProxy</div>
+                      <div class="app-subtitle" id="sim-top-subtitle">127.0.0.1:1443 · v2.5.3</div>
+                    </div>
+                  </div>
+                  <span class="app-status-pill" id="sim-status-pill">● АКТИВЕН</span>
+                </div>
+
+                <!-- Tab 1: Главная (ProxyHeroCard + StatTiles) -->
+                <div id="sim-tab-proxy">
+                  <div class="app-card">
+                    <div class="app-card-header">
+                      <span class="app-card-label">СТАТУС MTPROTO</span>
+                      <span class="app-tag-mono" id="sim-route-tag">MTProto · WSS (CF-first)</span>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="pulse-dot" id="sim-hero-dot"></span>
+                        <strong style="font-size:16px;" id="sim-hero-state">Подключено</strong>
+                      </div>
+                      <span style="font-family:var(--font-mono); font-size:12px; opacity:0.75;" id="sim-uptime">01:42:18</span>
+                    </div>
+
+                    <div class="hero-traffic-box">
+                      <div>
+                        <div style="font-size:10px; opacity:0.65;">ВХОДЯЩИЙ</div>
+                        <div style="font-size:14px; font-weight:700; color:#10B981;" id="sim-rx">48.6 МБ</div>
+                      </div>
+                      <div style="text-align:right;">
+                        <div style="font-size:10px; opacity:0.65;">ИСХОДЯЩИЙ</div>
+                        <div style="font-size:14px; font-weight:700; color:var(--accent-tg);" id="sim-tx">12.4 МБ</div>
+                      </div>
+                    </div>
+
+                    <button type="button" class="app-tg-btn" onclick="copyConnectLink()">
+                      Подключить в Telegram (1 клик)
+                    </button>
+
+                    <div class="app-btn-row">
+                      <button type="button" class="app-btn-outline" onclick="copyConnectLink()">
+                        Скопировать ссылку
+                      </button>
+                      <button type="button" class="app-btn-danger" id="sim-power-btn" onclick="toggleSimPower()">
+                        Остановить
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="app-tiles-2col">
+                    <div class="app-stat-tile">
+                      <div class="app-card-label">ПУЛ WEBSOCKET</div>
+                      <div style="font-family:var(--font-mono); font-size:13px; font-weight:700; margin-top:3px;" id="sim-pool-tile">
+                        4 active · DC2/4
+                      </div>
+                    </div>
+                    <div class="app-stat-tile">
+                      <div class="app-card-label">CLOUDFLARE</div>
+                      <div style="font-family:var(--font-mono); font-size:13px; font-weight:700; color:#10B981; margin-top:3px;" id="sim-cf-tile">
+                        Priority (CDN)
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="app-card" style="margin-bottom:0; padding:10px 12px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:11.5px;">
+                      <span style="opacity:0.75;">Пинг до DC2 (kws2.web.telegram.org)</span>
+                      <strong style="font-family:var(--font-mono); color:#10B981;" id="sim-ping">28 мс</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Tab 2: Настройки (SettingsCard + PoolSizeCard + BuildMetadataCard) -->
+                <div id="sim-tab-settings" style="display: none;">
+                  <div class="app-card">
+                    <div class="app-card-label" style="margin-bottom:6px;">МАРШРУТИЗАЦИЯ И ЭНЕРГОСБЕРЕЖЕНИЕ</div>
+                    <label style="display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:5px 0; cursor:pointer;">
+                      <span>Приоритет Cloudflare (CF-first)</span>
+                      <input type="checkbox" id="sim-cf-checkbox" checked onchange="toggleSimCfPriority(this.checked)" />
+                    </label>
+                    <label style="display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:5px 0; cursor:pointer;">
+                      <span>Умный режим сна (Smart Standby)</span>
+                      <input type="checkbox" checked onchange="showToast('Smart Standby: экономия батареи при выключенном экране')" />
+                    </label>
+                    <label style="display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:5px 0; cursor:pointer;">
+                      <span>Автозапуск при загрузке Android</span>
+                      <input type="checkbox" checked onchange="showToast('Автозапуск при старте системы включён')" />
+                    </label>
+                  </div>
+
+                  <div class="app-card">
+                    <div class="app-card-label">РАЗМЕР ПУЛА WEBSOCKET (DC2 / DC4)</div>
+                    <div class="pool-chip-row">
+                      <button type="button" class="pool-chip" onclick="setSimPoolSize(2, this)">2 соед.</button>
+                      <button type="button" class="pool-chip active" onclick="setSimPoolSize(4, this)">4 соед.</button>
+                      <button type="button" class="pool-chip" onclick="setSimPoolSize(6, this)">6 соед.</button>
+                    </div>
+                  </div>
+
+                  <div class="app-card" style="margin-bottom:0;">
+                    <div class="app-card-header" style="margin-bottom:4px;">
+                      <span class="app-card-label">ИНФОРМАЦИЯ О СБОРКЕ</span>
+                      <span class="app-tag-mono" style="color:#10B981;">СТАБИЛЬНАЯ</span>
+                    </div>
+                    <div style="font-family:var(--font-mono); font-size:11px; opacity:0.88; line-height:1.45;">
+                      Версия: <strong>v2.5.3 (Build #32)</strong> • arm64-v8a<br>
+                      Хранилище: AndroidKeyStore AES-GCM
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Tab 3: Журнал (LazyColumn Logs) -->
+                <div id="sim-tab-logs" style="display: none;">
+                  <div class="app-card-header" style="margin-bottom: 8px;">
+                    <span class="app-card-label">ЖУРНАЛ ОТЛАДКИ (LAZYCOLUMN)</span>
+                    <span class="app-tag-mono">libtgwsproxy.so</span>
+                  </div>
+                  <div class="app-log-box" id="sim-log-output">
+                    [20:58:01] [INFO] Starting MTProto WS Proxy on 127.0.0.1:1443<br>
+                    [20:58:01] [INFO] Keystore AES-GCM secret loaded (16 bytes)<br>
+                    [20:58:01] [INFO] TcpListener bound immediately on :1443<br>
+                    [20:58:02] [INFO] WsPool background warmup: size=4 (DC2, DC4)<br>
+                    [20:58:03] [INFO] Sec-WebSocket-Accept verified (RFC 6455)<br>
+                    [20:58:04] [INFO] Rust stats: active=3 cf=3 ws=4 tcp_fb=0 err=0
+                  </div>
+                </div>
+
+                <!-- Tab 4: Справка (Help & Architecture) -->
+                <div id="sim-tab-help" style="display: none;">
+                  <div class="app-card">
+                    <div class="app-card-label" style="margin-bottom:6px;">БЫСТРЫЙ СТАРТ (3 ШАГА)</div>
+                    <div style="font-size:12px; line-height:1.5; opacity:0.9;">
+                      1. Убедитесь, что статус на главной — <strong>Подключено</strong>.<br>
+                      2. Нажмите <strong>Подключить в Telegram</strong> (профиль <code>127.0.0.1:1443</code> добавится автоматически).<br>
+                      3. Все остальные приложения продолжают работать напрямую без VPN.
+                    </div>
+                  </div>
+                  <div class="app-card" style="margin-bottom:0;">
+                    <div class="app-card-label" style="margin-bottom:6px;">ЧИСТОЕ ЯДРО V2.5.3</div>
+                    <div style="font-size:11.5px; line-height:1.45; opacity:0.85;">
+                      В версии <strong>2.5.3</strong> приложение работает исключительно на едином нативном Rust-мосте <code>MTProto-over-WebSocket</code> (<code>libtgwsproxy.so</code>) с поддержкой отката версий и выбора маршрутизации.
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Bottom Navigation (Material 3 4-Tab Bar) -->
+              <div class="app-bottom-nav">
+                <button type="button" class="app-nav-item active" onclick="switchSimTab('proxy', this)">
+                  <span>Главная</span>
+                </button>
+                <button type="button" class="app-nav-item" onclick="switchSimTab('settings', this)">
+                  <span>Настройки</span>
+                </button>
+                <button type="button" class="app-nav-item" onclick="switchSimTab('logs', this)">
+                  <span>Журнал</span>
+                </button>
+                <button type="button" class="app-nav-item" onclick="switchSimTab('help', this)">
+                  <span>Справка</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How It Works Section -->
+    <section id="how-it-works">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Как пакет проходит от Telegram до дата-центра</h2>
+          <p class="section-desc">
+            Вместо создания виртуального сетевого интерфейса <code>VpnService</code> на весь телефон, приложение открывает локальный сокет только для клиента Telegram.
+          </p>
+        </div>
+
+        <div class="pipeline-grid">
+          <div class="pipeline-step">
+            <span class="step-tag">ШАГ 01 • КЛИЕНТ</span>
+            <h3>Telegram Android</h3>
+            <p>Подключается к <code>127.0.0.1:1443</code> по стандартному профилю MTProto Proxy с локальным <code>dd</code>-секретом.</p>
+          </div>
+          <div class="pipeline-step">
+            <span class="step-tag">ШАГ 02 • DEOBFUSCATION</span>
+            <h3>Чтение Obfuscated2</h3>
+            <p>Нативное ядро Rust считывает 64-байтный заголовок, извлекает номер дата-центра (<code>DC1..DC5</code> или <code>203</code>) и зануляет ключи в памяти после использования.</p>
+          </div>
+          <div class="pipeline-step">
+            <span class="step-tag">ШАГ 03 • ТРАНСПОРТ</span>
+            <h3>TLS 1.3 WebSocket (RFC 6455)</h3>
+            <p>Пакеты инкапсулируются в WebSocket-фреймы с проверкой <code>Sec-WebSocket-Accept</code> и уходят через пул прогретых соединений <code>rustls</code>.</p>
+          </div>
+          <div class="pipeline-step">
+            <span class="step-tag">ШАГ 04 • ФОЛБЭК</span>
+            <h3>Прямой DC + CF-first</h3>
+            <p>Вы сами выбираете в настройках: подключаться напрямую к <code>kws*.web.telegram.org</code> или использовать пул Cloudflare CDN с прозрачным TCP fallback.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Comparison: Why Not VPN -->
+    <section id="vs-vpn">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Чем локальный WS-прокси лучше обычного VPN</h2>
+          <p class="section-desc">
+            Обычный VPN заворачивает весь трафик смартфона в зарубежный туннель. TG WS Proxy работает точечно внутри самого Telegram.
+          </p>
+        </div>
+
+        <div class="comparison-wrap">
+          <table class="comp-table">
+            <thead>
+              <tr>
+                <th>Параметр</th>
+                <th>TG WS Proxy Android (v2.5.3)</th>
+                <th>Обычный VPN-клиент</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Банковские приложения, Госуслуги, такси</strong></td>
+                <td class="good-val">Работают напрямую без помех (VPN-слот свободен)</td>
+                <td class="bad-val">Часто блокируют вход из-за чужого IP</td>
+              </tr>
+              <tr>
+                <td><strong>Расход заряда батареи</strong></td>
+                <td class="good-val">Минимальный (~0% при выключенном экране со Smart Standby)</td>
+                <td class="bad-val">Постоянный перехват пакетов всех приложений (TUN/TAP)</td>
+              </tr>
+              <tr>
+                <td><strong>Сбор трафика и приватность</strong></td>
+                <td class="good-val">100% локально на 127.0.0.1:1443 (исходный код открыт, GPLv3)</td>
+                <td class="bad-val">Весь DNS и трафик проходит через чужой сервер</td>
+              </tr>
+              <tr>
+                <td><strong>Каскадная отказоустойчивость</strong></td>
+                <td class="good-val">Cloudflare CDN + прямой WSS к DC + прямой TCP fallback</td>
+                <td class="bad-val">Один сервер, легко блокируется по IP/сигнатуре</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Live Statistics Dashboard -->
+    <section id="stats">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Живая статистика сайта и релизов</h2>
+          <p class="section-desc">
+            Реальные показатели в прямом эфире: глобальный счётчик открытий страницы (Abacus API) и прямая статистика скачиваний APK из GitHub Releases API без искусственных накруток.
+          </p>
+        </div>
+
+        <div class="promo-grid">
+          <div class="views-widget-large">
+            <div>
+              <div class="eyebrow-pill" style="margin-bottom: 10px;">
+                <span class="pulse-dot"></span>
+                <span>РЕАЛЬНЫЙ СЧЁТЧИК ПРОСМОТРОВ</span>
+              </div>
+              <div style="font-size: 13px; color: var(--text-secondary);">Всего реальных просмотров сайта:</div>
+              <div class="big-counter-num" id="widget-site-views">Загрузка…</div>
+
+              <ul class="counter-meta-list">
+                <li>
+                  <span>Статус вашего визита:</span>
+                  <strong style="color: var(--accent-ok);" id="widget-visit-state">Проверка…</strong>
+                </li>
+                <li>
+                  <span>Открытий в вашем браузере:</span>
+                  <strong id="widget-local-visits">1</strong>
+                </li>
+                <li>
+                  <span>Всего скачиваний APK (GitHub):</span>
+                  <strong id="widget-apk-downloads">Загрузка…</strong>
+                </li>
+                <li>
+                  <span>Выпущено релизов на GitHub:</span>
+                  <strong id="widget-release-count">Загрузка…</strong>
+                </li>
+                <li>
+                  <span>Звёзд репозитория (GitHub Stars):</span>
+                  <strong id="widget-gh-stars">Загрузка…</strong>
+                </li>
+                <li>
+                  <span>Последний опубликованный релиз:</span>
+                  <strong id="widget-latest-version">Загрузка…</strong>
+                </li>
+              </ul>
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-top: 8px;">
+              <img
+                src="https://hits.sh/github.com/wqeww0001/TgwsProxyAndroid/site.svg?style=flat-square&label=Hits.sh&color=10b981&labelColor=0e1524"
+                alt="Счётчик просмотров Hits.sh"
+                style="height: 22px; border-radius: 4px;"
+                onerror="this.style.display='none'"
+              />
+              <button type="button" class="btn btn-secondary" style="padding: 8px 14px; font-size: 12.5px;" onclick="refreshLiveStats()">
+                Обновить данные сейчас
+              </button>
+            </div>
+          </div>
+
+          <div class="promo-card" style="display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px;">
+                <h3 style="font-size: 18px;">Скачивания APK по версиям (GitHub API)</h3>
+                <span class="brand-version" id="stats-api-status">LIVE</span>
+              </div>
+              <p style="font-size: 13.5px; color: var(--text-secondary); margin-bottom: 14px;">
+                Прямая выгрузка из <code>api.github.com/repos/wqeww0001/TgwsProxyAndroid/releases</code>:
+              </p>
+
+              <div class="comparison-wrap" style="border-radius: 12px;">
+                <table class="comp-table" style="font-size: 13px;">
+                  <thead>
+                    <tr>
+                      <th style="padding: 10px 14px;">Версия</th>
+                      <th style="padding: 10px 14px;">Дата</th>
+                      <th style="padding: 10px 14px;">Размер APK</th>
+                      <th style="padding: 10px 14px; text-align: right;">Скачиваний</th>
+                    </tr>
+                  </thead>
+                  <tbody id="releases-stats-tbody">
+                    <tr>
+                      <td colspan="4" style="padding: 16px; text-align: center; color: var(--text-secondary);">
+                        Загрузка реальной статистики из GitHub API…
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; font-size: 12.5px; color: var(--text-muted);">
+              <span>Источник: публичный API GitHub &amp; Abacus Counter</span>
+              <a href="https://github.com/wqeww0001/TgwsProxyAndroid/releases" target="_blank" rel="noopener" style="color: var(--accent-tg); font-weight: 600;">
+                Смотреть все релизы на GitHub →
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <div>
+        <strong>TG WS Proxy Android</strong> • Лицензия GNU GPLv3 • Сделано на Rust и Jetpack Compose
+      </div>
+      <div style="display: flex; gap: 18px;">
+        <a href="https://github.com/wqeww0001/TgwsProxyAndroid" target="_blank" rel="noopener">Исходный код</a>
+        <a href="https://github.com/wqeww0001/TgwsProxyAndroid/releases" target="_blank" rel="noopener">Все релизы</a>
+        <a href="https://github.com/wqeww0001/TgwsProxyAndroid/issues" target="_blank" rel="noopener">Сообщить об ошибке</a>
+      </div>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast-box" role="status" aria-live="polite"></div>
+
+  <script>
+    // 1. Toast Notification Helper
+    function showToast(message) {
+      const toast = document.getElementById('toast-box');
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(window.__toastTimer);
+      window.__toastTimer = setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2800);
+    }
+
+    // 2. Number Formatter
+    function formatNum(n) {
+      return Number(n || 0).toLocaleString('ru-RU');
+    }
+
+    // 3. Real Website Views Counter (Abacus API + Session Guard, zero fake numbers)
+    async function initSiteViewsCounter(forceReadOnly = false) {
+      const localKey = 'tgwsproxy_real_local_visits';
+      const cachedGlobalKey = 'tgwsproxy_real_global_views';
+      const sessionCountedKey = 'tgwsproxy_real_session_counted';
+
+      let localVisits = parseInt(localStorage.getItem(localKey) || '0', 10);
+      if (!forceReadOnly) {
+        localVisits += 1;
+        localStorage.setItem(localKey, String(localVisits));
+      }
+      document.getElementById('widget-local-visits').textContent = formatNum(localVisits);
+
+      const alreadyCountedInSession = sessionStorage.getItem(sessionCountedKey) === '1';
+      const shouldIncrement = !alreadyCountedInSession && !forceReadOnly;
+
+      try {
+        // Real CORS-enabled counter endpoint (Abacus API)
+        const endpoint = shouldIncrement
+          ? 'https://abacus.jasoncameron.dev/hit/wqeww0001-tgwsproxyandroid/site-views'
+          : 'https://abacus.jasoncameron.dev/get/wqeww0001-tgwsproxyandroid/site-views';
+
+        const resp = await fetch(endpoint, { cache: 'no-store' });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (typeof data.value === 'number') {
+            localStorage.setItem(cachedGlobalKey, String(data.value));
+            sessionStorage.setItem(sessionCountedKey, '1');
+            renderViewCounts(data.value);
+            document.getElementById('hero-views-sub').textContent = 'Реальный счётчик (Abacus API)';
+            document.getElementById('widget-visit-state').textContent = shouldIncrement
+              ? 'Засчитан (+1 в глобальный счётчик)'
+              : 'Уже учтён в текущей сессии';
+            document.getElementById('visit-status-badge').textContent = shouldIncrement
+              ? '+1 ваш визит'
+              : 'активен';
+            return;
+          }
+        }
+      } catch (_) {
+        // If offline or blocked, show real cached value or local visits without any fake numbers
+      }
+
+      const cached = localStorage.getItem(cachedGlobalKey);
+      if (cached !== null) {
+        renderViewCounts(parseInt(cached, 10));
+        document.getElementById('hero-views-sub').textContent = 'Кэш последнего ответа API';
+        document.getElementById('widget-visit-state').textContent = 'Офлайн-кэш';
+      } else {
+        renderViewCounts(localVisits);
+        document.getElementById('hero-views-sub').textContent = 'Локальный счётчик браузера';
+        document.getElementById('widget-visit-state').textContent = 'Локальный учёт (+1)';
+      }
+    }
+
+    function renderViewCounts(total) {
+      const formatted = formatNum(total);
+      document.getElementById('top-site-views').textContent = formatted;
+      document.getElementById('hero-site-views').textContent = formatted;
+      document.getElementById('widget-site-views').textContent = formatted;
+    }
+
+    // 4. Real GitHub Release & Repository Telemetry (100% live from api.github.com)
+    async function loadGitHubTelemetry() {
+      const tbody = document.getElementById('releases-stats-tbody');
+      try {
+        const [repoResp, releasesResp] = await Promise.all([
+          fetch('https://api.github.com/repos/wqeww0001/TgwsProxyAndroid', { cache: 'no-store' }),
+          fetch('https://api.github.com/repos/wqeww0001/TgwsProxyAndroid/releases?per_page=50', { cache: 'no-store' })
+        ]);
+
+        if (repoResp.ok) {
+          const repo = await repoResp.json();
+          const stars = formatNum(repo.stargazers_count || 0);
+          document.getElementById('top-gh-stars').textContent = stars;
+          document.getElementById('widget-gh-stars').textContent = stars;
+        }
+
+        if (releasesResp.ok) {
+          const releases = await releasesResp.json();
+          let totalDownloads = 0;
+          let latestTag = 'v2.5.3';
+          let latestApkUrl = 'https://github.com/wqeww0001/TgwsProxyAndroid/releases/latest';
+
+          if (Array.isArray(releases) && releases.length > 0) {
+            latestTag = releases[0].tag_name || latestTag;
+            const firstAsset = (releases[0].assets || []).find(a => a.name && a.name.endsWith('.apk'));
+            if (firstAsset && firstAsset.browser_download_url) {
+              latestApkUrl = firstAsset.browser_download_url;
+            }
+
+            const rowsHtml = [];
+            for (const rel of releases) {
+              let relDownloads = 0;
+              let apkSizeBytes = 0;
+              let apkUrl = rel.html_url || latestApkUrl;
+              for (const asset of (rel.assets || [])) {
+                relDownloads += (asset.download_count || 0);
+                if (asset.name && asset.name.endsWith('.apk')) {
+                  apkSizeBytes = asset.size || 0;
+                  apkUrl = asset.browser_download_url || apkUrl;
+                }
+              }
+              totalDownloads += relDownloads;
+
+              if (rowsHtml.length < 7) {
+                const dateStr = rel.published_at
+                  ? new Date(rel.published_at).toLocaleDateString('ru-RU')
+                  : '—';
+                const sizeStr = apkSizeBytes > 0
+                  ? (apkSizeBytes / (1024 * 1024)).toFixed(2) + ' МБ'
+                  : '—';
+                rowsHtml.push(`
+                  <tr>
+                    <td style="padding: 10px 14px; font-family: var(--font-mono); font-weight: 700;">
+                      <a href="${apkUrl}" target="_blank" rel="noopener" style="color: var(--accent-tg);">${rel.tag_name}</a>
+                    </td>
+                    <td style="padding: 10px 14px; color: var(--text-secondary);">${dateStr}</td>
+                    <td style="padding: 10px 14px; font-family: var(--font-mono); color: var(--text-secondary);">${sizeStr}</td>
+                    <td style="padding: 10px 14px; text-align: right; font-family: var(--font-mono); font-weight: 700; color: var(--accent-ok);">
+                      ${formatNum(relDownloads)}
+                    </td>
+                  </tr>
+                `);
+              }
+            }
+
+            tbody.innerHTML = rowsHtml.join('');
+            document.getElementById('widget-release-count').textContent = formatNum(releases.length);
+          }
+
+          const dlFormatted = formatNum(totalDownloads);
+          document.getElementById('top-apk-downloads').textContent = dlFormatted;
+          document.getElementById('hero-apk-downloads').textContent = dlFormatted;
+          document.getElementById('widget-apk-downloads').textContent = dlFormatted;
+
+          document.getElementById('nav-version-badge').textContent = latestTag;
+          document.getElementById('widget-latest-version').textContent = latestTag;
+          document.getElementById('hero-release-tag').textContent = 'Актуальный релиз на GitHub: ' + latestTag;
+          document.getElementById('hero-download-text').textContent = 'Скачать APK (' + latestTag + ')';
+          document.getElementById('hero-download-btn').href = latestApkUrl;
+          document.getElementById('nav-download-btn').href = latestApkUrl;
+          document.getElementById('stats-api-status').textContent = 'LIVE • GitHub API';
+        }
+      } catch (_) {
+        document.getElementById('stats-api-status').textContent = 'ОФЛАЙН';
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="4" style="padding: 16px; text-align: center; color: var(--text-secondary);">
+              Не удалось подключиться к api.github.com. Проверьте соединение с интернетом.
+            </td>
+          </tr>
+        `;
+      }
+    }
+
+    function refreshLiveStats() {
+      showToast('Обновление реальной статистики с сервера…');
+      initSiteViewsCounter(true);
+      loadGitHubTelemetry();
+    }
+
+    // 5. Interactive Android App Simulator Logic (v2.5.3 Material 3 UI)
+    let simRunning = true;
+    let simCfPriority = true;
+    let simPoolSize = 4;
+
+    function toggleSimPower() {
+      simRunning = !simRunning;
+      const btn = document.getElementById('sim-power-btn');
+      const pill = document.getElementById('sim-status-pill');
+      const stateText = document.getElementById('sim-hero-state');
+      const dot = document.getElementById('sim-hero-dot');
+      const poolTile = document.getElementById('sim-pool-tile');
+
+      if (simRunning) {
+        btn.textContent = 'Остановить';
+        btn.classList.remove('start-mode');
+        pill.textContent = '● АКТИВЕН';
+        pill.classList.remove('stopped');
+        stateText.textContent = 'Подключено';
+        dot.style.background = '#10B981';
+        poolTile.textContent = simPoolSize + ' active · DC2/4';
+        showToast('MTProto WS прокси запущен на 127.0.0.1:1443');
+      } else {
+        btn.textContent = 'Запустить';
+        btn.classList.add('start-mode');
+        pill.textContent = 'ОСТАНОВЛЕН';
+        pill.classList.add('stopped');
+        stateText.textContent = 'Остановлен';
+        dot.style.background = '#94A3B8';
+        poolTile.textContent = '0 active · ожидание';
+        showToast('Прокси остановлен');
+      }
+    }
+
+    function toggleSimCfPriority(enabled) {
+      simCfPriority = enabled;
+      const routeTag = document.getElementById('sim-route-tag');
+      const cfTile = document.getElementById('sim-cf-tile');
+      if (enabled) {
+        routeTag.textContent = 'MTProto · WSS (CF-first)';
+        cfTile.textContent = 'Priority (CDN)';
+        cfTile.style.color = '#10B981';
+        showToast('Маршрут: Приоритет Cloudflare CDN (CF-first)');
+      } else {
+        routeTag.textContent = 'MTProto · Direct WSS';
+        cfTile.textContent = 'Direct WSS';
+        cfTile.style.color = '#2AABEE';
+        showToast('Маршрут: Прямой WSS к kws*.web.telegram.org');
+      }
+    }
+
+    function setSimPoolSize(size, chipEl) {
+      simPoolSize = size;
+      document.querySelectorAll('.pool-chip').forEach(el => el.classList.remove('active'));
+      chipEl.classList.add('active');
+      if (simRunning) {
+        document.getElementById('sim-pool-tile').textContent = size + ' active · DC2/4';
+      }
+      showToast('Размер пула WebSocket: ' + size + ' соед.');
+    }
+
+    function switchSimTab(tab, btnEl) {
+      document.getElementById('sim-tab-proxy').style.display = tab === 'proxy' ? 'block' : 'none';
+      document.getElementById('sim-tab-settings').style.display = tab === 'settings' ? 'block' : 'none';
+      document.getElementById('sim-tab-logs').style.display = tab === 'logs' ? 'block' : 'none';
+      document.getElementById('sim-tab-help').style.display = tab === 'help' ? 'block' : 'none';
+
+      document.querySelectorAll('.app-nav-item').forEach(el => el.classList.remove('active'));
+      btnEl.classList.add('active');
+    }
+
+    function setAppTheme(theme, chipEl) {
+      document.getElementById('app-simulator').setAttribute('data-app-theme', theme);
+      document.querySelectorAll('.theme-chip').forEach(c => c.classList.remove('active'));
+      chipEl.classList.add('active');
+    }
+
+    function copyConnectLink() {
+      const link = 'tg://proxy?server=127.0.0.1&port=1443&secret=dd000102030405060708090a0b0c0d0e0f';
+      navigator.clipboard.writeText(link).then(() => {
+        showToast('Ссылка подключения скопирована: 127.0.0.1:1443');
+      }).catch(() => {
+        showToast('Профиль: 127.0.0.1:1443');
+      });
+    }
+
+    function shareProject() {
+      const url = encodeURIComponent('https://github.com/wqeww0001/TgwsProxyAndroid/releases/latest');
+      const text = encodeURIComponent('TG WS Proxy для Android — локальный MTProto WebSocket прокси для Telegram на Rust без VPN и без разряда батареи:');
+      window.open(`https://t.me/share/url?url=${url}&text=${text}`, '_blank', 'noopener');
+    }
+
+    // Initialize on load
+    document.addEventListener('DOMContentLoaded', () => {
+      initSiteViewsCounter(false);
+      loadGitHubTelemetry();
+    });
+  </script>
+</body>
+</html>

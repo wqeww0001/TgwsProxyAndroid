@@ -87,8 +87,7 @@ pub const CFPROXY_DOMAINS_URL: &str =
     "https://raw.githubusercontent.com/Flowseal/tg-ws-proxy/main/.github/cfproxy-domains.txt";
 
 // MTProto proxy secret
-pub static PROXY_SECRET: Lazy<RwLock<String>> =
-    Lazy::new(|| RwLock::new("00000000000000000000000000000000".to_string()));
+pub static PROXY_SECRET: Lazy<RwLock<String>> = Lazy::new(|| RwLock::new(String::new()));
 
 pub static CFPROXY_ENC: &[&str] = &[
     "virkgj.com",
@@ -251,13 +250,17 @@ pub fn human_bytes(n: i64) -> String {
 // Logger (Android log + stderr, 1-в-1 префиксы)
 // ---------------------------------------------------------------------------
 
+const ANDROID_LOG_DEBUG: i32 = 3;
+const ANDROID_LOG_INFO: i32 = 4;
+const ANDROID_LOG_WARN: i32 = 5;
+const ANDROID_LOG_ERROR: i32 = 6;
+
 #[cfg(target_os = "android")]
-fn android_log_line(line: &str) {
+fn android_log_line(prio: i32, line: &str) {
     use std::ffi::CString;
     extern "C" {
         fn __android_log_print(prio: i32, tag: *const i8, fmt: *const i8, ...) -> i32;
     }
-    const ANDROID_LOG_INFO: i32 = 4;
     if let (Ok(tag), Ok(fmt), Ok(msg)) = (
         CString::new("TgWsProxy"),
         CString::new("%s"),
@@ -265,7 +268,7 @@ fn android_log_line(line: &str) {
     ) {
         unsafe {
             __android_log_print(
-                ANDROID_LOG_INFO,
+                prio,
                 tag.as_ptr() as *const i8,
                 fmt.as_ptr() as *const i8,
                 msg.as_ptr() as *const i8,
@@ -275,26 +278,26 @@ fn android_log_line(line: &str) {
 }
 
 #[cfg(not(target_os = "android"))]
-fn android_log_line(_line: &str) {}
+fn android_log_line(_prio: i32, _line: &str) {}
 
-fn emit(prefix: &str, msg: &str) {
+fn emit(prio: i32, prefix: &str, msg: &str) {
     let line = format!("{}{}", prefix, msg);
     eprintln!("{}", line);
-    android_log_line(&line);
+    android_log_line(prio, &line);
 }
 
 pub fn log_info(msg: &str) {
-    emit("", msg);
+    emit(ANDROID_LOG_INFO, "", msg);
 }
 pub fn log_warn(msg: &str) {
-    emit("[WARN] ", msg);
+    emit(ANDROID_LOG_WARN, "[WARN] ", msg);
 }
 pub fn log_error(msg: &str) {
-    emit("[ERROR] ", msg);
+    emit(ANDROID_LOG_ERROR, "[ERROR] ", msg);
 }
 pub fn log_debug(msg: &str) {
     if LOG_VERBOSE.load(Ordering::Relaxed) {
-        emit("[DEBUG] ", msg);
+        emit(ANDROID_LOG_DEBUG, "[DEBUG] ", msg);
     }
 }
 

@@ -4,16 +4,20 @@ import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 
-private interface ProxyLibrary : Library {
+internal interface ProxyLibrary : Library {
     companion object {
-        val INSTANCE: ProxyLibrary = Native.load("tgwsproxy", ProxyLibrary::class.java) as ProxyLibrary
+        val INSTANCE: ProxyLibrary by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            Native.load("tgwsproxy", ProxyLibrary::class.java) as ProxyLibrary
+        }
     }
 
     fun StartProxy(host: String, port: Int, dcIps: String, secret: String, verbose: Int): Int
     fun StopProxy(): Int
+    fun IsListening(): Int
     fun SetPoolSize(size: Int)
     fun SetCfProxyCacheDir(cacheDir: String)
     fun SetCfProxyConfig(enabled: Int, priority: Int, userDomain: String)
+    fun SetSecret(secret: String)
     fun GetSecretWithPrefix(): Pointer?
     fun GetStats(): Pointer?
     fun GetLastTransportError(): Pointer?
@@ -21,11 +25,22 @@ private interface ProxyLibrary : Library {
 }
 
 object NativeProxy {
+    private fun consumeNativeString(ptr: Pointer?): String? {
+        val nonNull = ptr ?: return null
+        return try {
+            nonNull.getString(0, "UTF-8")
+        } finally {
+            ProxyLibrary.INSTANCE.FreeString(nonNull)
+        }
+    }
+
     fun startProxy(host: String, port: Int, dcIps: String, secret: String, verbose: Boolean): Int {
         return ProxyLibrary.INSTANCE.StartProxy(host, port, dcIps, secret, if (verbose) 1 else 0)
     }
 
     fun stopProxy(): Int = ProxyLibrary.INSTANCE.StopProxy()
+
+    fun isListening(): Boolean = ProxyLibrary.INSTANCE.IsListening() == 1
 
     fun setPoolSize(size: Int) {
         ProxyLibrary.INSTANCE.SetPoolSize(size)
@@ -43,24 +58,16 @@ object NativeProxy {
         )
     }
 
-    fun getSecretWithPrefix(): String? {
-        val ptr = ProxyLibrary.INSTANCE.GetSecretWithPrefix() ?: return null
-        val result = ptr.getString(0)
-        ProxyLibrary.INSTANCE.FreeString(ptr)
-        return result
+    fun setSecret(secret: String) {
+        ProxyLibrary.INSTANCE.SetSecret(secret)
     }
 
-    fun getStats(): String? {
-        val ptr = ProxyLibrary.INSTANCE.GetStats() ?: return null
-        val result = ptr.getString(0)
-        ProxyLibrary.INSTANCE.FreeString(ptr)
-        return result
-    }
+    fun getSecretWithPrefix(): String? =
+        consumeNativeString(ProxyLibrary.INSTANCE.GetSecretWithPrefix())
 
-    fun getLastError(): String? {
-        val ptr = ProxyLibrary.INSTANCE.GetLastTransportError() ?: return null
-        val result = ptr.getString(0)
-        ProxyLibrary.INSTANCE.FreeString(ptr)
-        return result
-    }
+    fun getStats(): String? =
+        consumeNativeString(ProxyLibrary.INSTANCE.GetStats())
+
+    fun getLastError(): String? =
+        consumeNativeString(ProxyLibrary.INSTANCE.GetLastTransportError())
 }

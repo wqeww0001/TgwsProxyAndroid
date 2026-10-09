@@ -52,6 +52,13 @@ impl TrackedStream {
     }
 }
 
+impl Drop for TrackedStream {
+    fn drop(&mut self) {
+        self.key.fill(0);
+        self.iv.fill(0);
+    }
+}
+
 pub fn new_aes_ctr(key: &[u8], iv: &[u8]) -> TrackedStream {
     TrackedStream::new(key, iv)
 }
@@ -78,6 +85,13 @@ pub struct MsgSplitter {
     cipher_buf: Vec<u8>,
     plain_buf: Vec<u8>,
     disabled: bool,
+}
+
+impl Drop for MsgSplitter {
+    fn drop(&mut self) {
+        self.cipher_buf.fill(0);
+        self.plain_buf.fill(0);
+    }
 }
 
 impl MsgSplitter {
@@ -109,6 +123,7 @@ impl MsgSplitter {
         if self.cipher_buf.len().saturating_add(chunk.len()) > MAX_SPLITTER_BUFFER {
             let mut passthrough = std::mem::take(&mut self.cipher_buf);
             passthrough.extend_from_slice(chunk);
+            self.plain_buf.fill(0);
             self.plain_buf.clear();
             self.disabled = true;
             return vec![passthrough];
@@ -118,6 +133,7 @@ impl MsgSplitter {
         let mut decrypted = chunk.to_vec();
         self.stream.apply_keystream(&mut decrypted);
         self.plain_buf.extend_from_slice(&decrypted);
+        decrypted.fill(0);
 
         let mut parts: Vec<Vec<u8>> = Vec::new();
         while !self.cipher_buf.is_empty() {
@@ -127,7 +143,9 @@ impl MsgSplitter {
             }
             if pkt_len == 0 {
                 parts.push(self.cipher_buf.clone());
+                self.cipher_buf.fill(0);
                 self.cipher_buf.clear();
+                self.plain_buf.fill(0);
                 self.plain_buf.clear();
                 self.disabled = true;
                 break;
@@ -153,7 +171,9 @@ impl MsgSplitter {
             return Vec::new();
         }
         let tail = self.cipher_buf.clone();
+        self.cipher_buf.fill(0);
         self.cipher_buf.clear();
+        self.plain_buf.fill(0);
         self.plain_buf.clear();
         vec![tail]
     }
@@ -215,7 +235,7 @@ impl MsgSplitter {
 
 pub fn xor_mask_in_place(data: &mut [u8], mask: &[u8]) {
     let n = data.len();
-    if n == 0 {
+    if n == 0 || mask.len() < 4 {
         return;
     }
     let mask8: u64 = (mask[0] as u64)
@@ -237,6 +257,88 @@ pub fn xor_mask_in_place(data: &mut [u8], mask: &[u8]) {
         data[i] ^= mask[i & 3];
         i += 1;
     }
+}
+
+// ---------------------------------------------------------------------------
+// RFC 6455 SHA-1 Sec-WebSocket-Accept calculation (FIPS 180-4)
+// ---------------------------------------------------------------------------
+
+pub fn sha1_digest(data: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+
+    let bit_len = (data.len() as u64) * 8;
+    let mut padded = Vec::with_capacity((data.len() + 72) & !63);
+    padded.extend_from_slice(data);
+    padded.push(0x80);
+    while (padded.len() % 64) != 56 {
+        padded.push(0);
+    }
+    let mut len_bytes = [0u8; 8];
+    BigEndian::write_u64(&mut len_bytes, bit_len);
+    padded.extend_from_slice(&len_bytes);
+
+    for chunk in padded.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = BigEndian::read_u32(&chunk[i * 4..i * 4 + 4]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+
+        let mut a = h0;
+        let mut b = h1;
+        let mut c = h2;
+        let mut d = h3;
+        let mut e = h4;
+
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1u32),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDCu32),
+                _ => (b ^ c ^ d, 0xCA62C1D6u32),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    BigEndian::write_u32(&mut out[0..4], h0);
+    BigEndian::write_u32(&mut out[4..8], h1);
+    BigEndian::write_u32(&mut out[8..12], h2);
+    BigEndian::write_u32(&mut out[12..16], h3);
+    BigEndian::write_u32(&mut out[16..20], h4);
+    out
+}
+
+pub fn websocket_accept_key(ws_key: &str) -> String {
+    use base64::Engine;
+    let mut input = Vec::with_capacity(ws_key.len() + 36);
+    input.extend_from_slice(ws_key.as_bytes());
+    input.extend_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let digest = sha1_digest(&input);
+    base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
 #[allow(dead_code)]
@@ -276,5 +378,13 @@ mod tests {
         assert!(splitter.disabled);
         assert!(splitter.cipher_buf.is_empty());
         assert!(splitter.plain_buf.is_empty());
+    }
+
+    #[test]
+    fn rfc6455_websocket_accept_vector() {
+        assert_eq!(
+            websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
     }
 }

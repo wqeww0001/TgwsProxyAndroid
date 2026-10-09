@@ -1,6 +1,5 @@
 package com.tgwsproxy.android
 
-import com.tgwsproxy.android.webproxy.WebProxyProtocol
 import java.security.SecureRandom
 import java.util.Locale
 
@@ -12,7 +11,7 @@ object ProxyConfig {
     fun generateSecret(): String {
         val bytes = ByteArray(16)
         SecureRandom().nextBytes(bytes)
-        return bytes.joinToString("") { "%02x".format(it) }
+        return bytes.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 
     fun isValidSecret(value: String): Boolean {
@@ -28,24 +27,6 @@ object ProxyConfig {
             "dd$clean"
         }
         return "tg://proxy?server=$HOST&port=$PORT&secret=$proxySecret"
-    }
-
-    fun telegramProxyLinkForMode(
-        localSecret: String,
-        webProxyEnabled: Boolean,
-        webProxyServer: String,
-        webProxySecret: String,
-    ): String {
-        if (webProxyEnabled) {
-            val endpoint = WebProxyProtocol.parseEndpointInput(
-                serverInput = webProxyServer,
-                secretInput = webProxySecret.ifBlank { localSecret },
-            )
-            if (endpoint != null) {
-                return telegramProxyLink(endpoint.localTelegramSecretHex)
-            }
-        }
-        return telegramProxyLink(localSecret)
     }
 
     fun cleanDomain(value: String): String {

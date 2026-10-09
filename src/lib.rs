@@ -95,22 +95,24 @@ unsafe fn start_proxy_impl(
         return -1;
     }
 
-    let host = cstr_to_string(c_host);
+    let host = cstr_to_string(c_host).trim().to_string();
+    if host.is_empty() || !(1..=65535).contains(&port) {
+        return -2;
+    }
     let go_port = port as u16;
     let dc_ips_str = cstr_to_string(c_dc_ips);
-    let secret_str = cstr_to_string(c_secret);
+    let secret_str = cstr_to_string(c_secret).trim().to_ascii_lowercase();
     let is_verbose = verbose != 0;
+
+    if secret_str.len() != 32 || hex::decode(&secret_str).is_err() {
+        return -4;
+    }
 
     init_logging(is_verbose);
     cfproxy::clear_cfproxy_429_cooldowns();
     router::reset();
     LAST_TRANSPORT_ERROR.write().clear();
-
-    if secret_str.len() == 32 {
-        if hex::decode(&secret_str).is_ok() {
-            *PROXY_SECRET.write() = secret_str.clone();
-        }
-    }
+    *PROXY_SECRET.write() = secret_str;
 
     cfproxy::init_cfproxy_domains();
 
@@ -133,27 +135,36 @@ unsafe fn start_proxy_impl(
         let addr = format!("{}:{}", host_task, go_port);
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
+                let _ = tx.send(Ok(()));
                 if CFPROXY_ENABLED.load(Ordering::Relaxed)
                     && CFPROXY_PRIORITY.load(Ordering::Relaxed)
                 {
                     linfo!("CF priority enabled; direct WS pool warmup skipped");
                 } else {
-                    let warmup =
-                        tokio::time::timeout(WS_POOL_WARMUP_TIMEOUT, pool_task.warmup(&map_task))
-                            .await;
-                    match warmup {
-                        Ok(()) => linfo!(
-                            "WS pool warmup complete: {} idle",
-                            pool_task.idle_count().await
-                        ),
-                        Err(_) => {
-                            lwarn!(
-                                "WS pool warmup timed out; continuing with on-demand connections"
-                            )
+                    let pool_warmup = pool_task.clone();
+                    let map_warmup = map_task.clone();
+                    let cancel_warmup = cancel_root.clone();
+                    tokio::spawn(async move {
+                        let warmup = tokio::select! {
+                            _ = cancel_warmup.cancelled() => return,
+                            r = tokio::time::timeout(
+                                WS_POOL_WARMUP_TIMEOUT,
+                                pool_warmup.warmup(&map_warmup),
+                            ) => r,
+                        };
+                        match warmup {
+                            Ok(()) => linfo!(
+                                "WS pool warmup complete: {} idle",
+                                pool_warmup.idle_count().await
+                            ),
+                            Err(_) => {
+                                lwarn!(
+                                    "WS pool warmup timed out; continuing with on-demand connections"
+                                )
+                            }
                         }
-                    }
+                    });
                 }
-                let _ = tx.send(Ok(()));
                 if let Err(e) = run_proxy(
                     pool_task,
                     host_task,
@@ -173,14 +184,11 @@ unsafe fn start_proxy_impl(
         }
     });
 
-    // Ждём результат bind
-    match rx.recv() {
+    // Ждём результат bind (макс 5 секунд)
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(())) => {}
-        Ok(Err(_)) => {
-            handle.abort();
-            return -3;
-        }
-        Err(_) => {
+        Ok(Err(_)) | Err(_) => {
+            cancel_tasks.cancel();
             handle.abort();
             return -3;
         }
@@ -216,10 +224,16 @@ fn stop_proxy_impl() -> c_int {
 
     let rt = runtime();
     let pool = state.pool.clone();
-    let handle = state.handle;
+    let mut handle = state.handle;
     rt.block_on(async move {
         linfo!("StopProxy: waiting for proxy tasks to finish (max 2s)");
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut handle)
+            .await
+            .is_err()
+        {
+            lwarn!("StopProxy: timeout waiting for main proxy task; aborting");
+            handle.abort();
+        }
         linfo!("StopProxy: closing pool connections");
         pool.close_all().await;
         linfo!("StopProxy: done");
@@ -233,6 +247,15 @@ fn stop_proxy_impl() -> c_int {
 
     linfo!("StopProxy: exit");
     0
+}
+
+/// 1 if the listener task is alive, 0 otherwise. Replaces the TCP self-probe.
+#[no_mangle]
+pub extern "C" fn IsListening() -> c_int {
+    ffi_guard("IsListening", 0, || match state_cell().lock().as_ref() {
+        Some(s) if !s.handle.is_finished() => 1,
+        _ => 0,
+    })
 }
 
 #[no_mangle]

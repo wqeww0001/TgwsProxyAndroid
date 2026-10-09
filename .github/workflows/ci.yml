@@ -9,10 +9,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -27,12 +31,18 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+
+      - name: Install prebuilt cargo-ndk
+        uses: taiki-e/install-action@cargo-ndk
 
       - name: Install Android SDK packages
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" || true
 
       - name: Test Rust core
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         run: cargo test --locked
 
       - name: Build Android native libraries
@@ -43,42 +53,36 @@ jobs:
           fi
           export ANDROID_NDK_HOME="$NDK_DIR"
           echo "Using ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
-          cargo install cargo-ndk --locked
-          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 --platform 26 -o app/src/main/jniLibs build --release --locked
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 --platform 26 -o app/src/main/jniLibs build --release --locked
+          else
+            cargo ndk -t arm64-v8a --platform 26 -o app/src/main/jniLibs build --release --locked
+          fi
 
       - name: Prepare Release Keystore
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
             echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > tgwsproxy-release.jks
-          else
-            STORE_PASS="${RELEASE_STORE_PASSWORD:-tgwsproxy_release_2026}"
-            KEY_PASS="${RELEASE_KEY_PASSWORD:-$STORE_PASS}"
-            ALIAS_NAME="${RELEASE_KEY_ALIAS:-tgwsproxy}"
-            keytool -genkeypair -v \
-              -keystore tgwsproxy-release.jks \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -alias "$ALIAS_NAME" \
-              -storepass "$STORE_PASS" \
-              -keypass "$KEY_PASS" \
-              -dname "CN=TgwsProxyAndroid, OU=Mobile, O=TgwsProxy, L=Internet, S=Global, C=US"
-            echo "RELEASE_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
-            echo "RELEASE_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
-            echo "RELEASE_KEY_ALIAS=$ALIAS_NAME" >> "$GITHUB_ENV"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "ERROR: RELEASE_KEYSTORE_BASE64 secret is required for tagged releases" >&2
+            exit 1
           fi
 
-      - name: Test, lint and build Android app
+      - name: Build Android APK
         env:
-          RELEASE_STORE_PASSWORD: ${{ env.RELEASE_STORE_PASSWORD || secrets.RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ env.RELEASE_KEY_ALIAS || secrets.RELEASE_KEY_ALIAS || 'tgwsproxy' }}
-          RELEASE_KEY_PASSWORD: ${{ env.RELEASE_KEY_PASSWORD || secrets.RELEASE_KEY_PASSWORD }}
+          RELEASE_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS || 'tgwsproxy' }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease --stacktrace
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ./gradlew assembleRelease --build-cache --parallel -x lint -x lintVitalRelease --stacktrace
+          else
+            ./gradlew testDebugUnitTest assembleDebug --build-cache --parallel -x lint --stacktrace
+          fi
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -86,14 +90,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG_NAME="${GITHUB_REF_NAME}"
+          VERSION_NUM="${TAG_NAME#v}"
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
           cp "$APK_PATH" "app-release.apk"
           cp "$APK_PATH" "TgwsProxyAndroid-${TAG_NAME}.apk"
+          awk -v ver="$VERSION_NUM" '
+            $0 ~ "^## " ver "($| )" { flag=1; print "# Что нового в TgwsProxyAndroid v" ver "\n"; next }
+            /^## / && flag { exit }
+            flag { print }
+          ' CHANGELOG.md > release_notes.md || true
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "app-release.apk" "TgwsProxyAndroid-${TAG_NAME}.apk" --clobber
+            if [ -s release_notes.md ]; then
+              gh release edit "$TAG_NAME" --title "TgwsProxyAndroid ${TAG_NAME}" --notes-file release_notes.md
+            fi
           else
-            gh release create "$TAG_NAME" "app-release.apk" "TgwsProxyAndroid-${TAG_NAME}.apk" \
-              --title "TgwsProxyAndroid ${TAG_NAME}" \
-              --generate-notes
+            if [ -s release_notes.md ]; then
+              gh release create "$TAG_NAME" "app-release.apk" "TgwsProxyAndroid-${TAG_NAME}.apk" \
+                --title "TgwsProxyAndroid ${TAG_NAME}" \
+                --notes-file release_notes.md
+            else
+              gh release create "$TAG_NAME" "app-release.apk" "TgwsProxyAndroid-${TAG_NAME}.apk" \
+                --title "TgwsProxyAndroid ${TAG_NAME}" \
+                --generate-notes
+            fi
           fi
+
+
 

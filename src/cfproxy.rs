@@ -43,12 +43,12 @@ pub fn decode_cf_domain(s: &str) -> String {
 }
 
 pub fn normalize_cf_domain(s: &str) -> String {
-    let decoded = decode_cf_domain(s.trim()).trim().to_lowercase();
-    let decoded = decoded
+    let raw = s.trim().to_lowercase();
+    let stripped = raw
         .strip_prefix("https://")
-        .or_else(|| decoded.strip_prefix("http://"))
-        .unwrap_or(&decoded);
-    let mut decoded = decoded
+        .or_else(|| raw.strip_prefix("http://"))
+        .unwrap_or(&raw);
+    let mut host = stripped
         .split('/')
         .next()
         .unwrap_or_default()
@@ -56,12 +56,12 @@ pub fn normalize_cf_domain(s: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_string();
-    while decoded.ends_with('.') {
-        decoded.pop();
+    while host.ends_with('.') {
+        host.pop();
     }
-    let valid = decoded.len() <= 253
-        && decoded.contains('.')
-        && decoded.split('.').all(|label| {
+    let valid = host.len() <= 253
+        && host.contains('.')
+        && host.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
                 && label
@@ -79,13 +79,17 @@ pub fn normalize_cf_domain(s: &str) -> String {
     if !valid {
         return String::new();
     }
-    decoded
+    host
+}
+
+pub fn decode_and_normalize_cf_domain(s: &str) -> String {
+    normalize_cf_domain(&decode_cf_domain(s.trim()))
 }
 
 pub fn default_cfproxy_domains() -> Vec<String> {
     let mut domains = Vec::with_capacity(CFPROXY_ENC.len());
     for enc in CFPROXY_ENC {
-        let d = normalize_cf_domain(enc);
+        let d = decode_and_normalize_cf_domain(enc);
         if !d.is_empty() {
             domains.push(d);
         }
@@ -422,7 +426,11 @@ pub async fn try_refresh_cfproxy_domains() -> bool {
         return false;
     }
     let body = match resp.text().await {
-        Ok(b) => b,
+        Ok(b) if b.len() <= 64 * 1024 => b,
+        Ok(_) => {
+            ldebug!(" CF: список доменов превышает лимит 64 КБ");
+            return false;
+        }
         Err(e) => {
             ldebug!(" CF: список доменов прочитать не удалось: {}", e);
             return false;
@@ -430,12 +438,12 @@ pub async fn try_refresh_cfproxy_domains() -> bool {
     };
 
     let mut new_domains = Vec::new();
-    for line in body.lines() {
+    for line in body.lines().take(100) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let d = normalize_cf_domain(line);
+        let d = decode_and_normalize_cf_domain(line);
         if !d.is_empty() {
             new_domains.push(d);
         }
@@ -452,7 +460,11 @@ pub async fn try_refresh_cfproxy_domains() -> bool {
             cfg.domains = merged.clone();
             set_active_cfproxy_domain_locked(&mut cfg, &current_active);
         }
-        save_cfproxy_domains_to_cache(&merged);
+        let merged_for_cache = merged.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            save_cfproxy_domains_to_cache(&merged_for_cache);
+        })
+        .await;
         linfo!(" CF: список доменов обновлен ({} шт.)", new_domains.len());
         return true;
     }
@@ -700,6 +712,15 @@ mod tests {
             "example.com"
         );
         assert_eq!(normalize_cf_domain("example.com:443"), "example.com");
+        assert_eq!(normalize_cf_domain("example.com"), "example.com");
+        assert_eq!(normalize_cf_domain("my-worker.com"), "my-worker.com");
+    }
+
+    #[test]
+    fn builtin_domains_decode_to_valid_co_uk() {
+        let builtins = default_cfproxy_domains();
+        assert!(!builtins.is_empty());
+        assert!(builtins.iter().all(|d| d.ends_with(".co.uk")));
     }
 
     #[test]

@@ -116,23 +116,7 @@ object UpdateChecker {
                 }
             }
             list
-        }.getOrElse {
-            // Fallback list of known historical releases
-            listOf(
-                ReleaseArchiveItem("2.5.0", "v2.5.0", "TgwsProxyAndroid v2.5.0", "Поддержка нового протокола Telegram Web Proxy (tproxy-v1 / t.me/webproxy), встроенный мост 127.0.0.1:1443 (https/websocket lanes), удаление устаревшего FakeTLS и LAN-раздачи.", "2026-10-06", false, "https://github.com/$cleanRepo/releases/download/v2.5.0/app-release.apk"),
-                ReleaseArchiveItem("2.4.2", "v2.4.2", "TgwsProxyAndroid v2.4.2", "Исправление багов шторки, пресетов и теста доменов. Система каналов и откат версий.", "2026-09-01", false, "https://github.com/$cleanRepo/releases/download/v2.4.2/app-release.apk"),
-                ReleaseArchiveItem("2.4.1", "v2.4.1", "TgwsProxyAndroid v2.4.1", "Плитка в шторке, LAN режим 0.0.0.0 с QR-кодом, Smart Standby, пресеты, история трафика.", "2026-08-31", false, "https://github.com/$cleanRepo/releases/download/v2.4.1/app-release.apk"),
-                ReleaseArchiveItem("2.4.0", "v2.4.0", "TgwsProxyAndroid v2.4.0", "Минималистичный редизайн, оптимизация энергопотребления и батареи.", "2026-08-28", false, "https://github.com/$cleanRepo/releases/download/v2.4.0/app-release.apk"),
-                ReleaseArchiveItem("2.3.3", "v2.3.3", "TgwsProxyAndroid 2.3.3", "Исправление Cloudflare Priority и оптимизация пула соединений.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.3/app-release.apk"),
-                ReleaseArchiveItem("2.3.2", "v2.3.2", "TgwsProxyAndroid 2.3.2", "Hotfix: свайп UI и восстановление соединения.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.2/app-release.apk"),
-                ReleaseArchiveItem("2.3.1", "v2.3.1", "TgwsProxyAndroid 2.3.1", "Детекция клиентов Telegram на Android 11+.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.1/app-release.apk"),
-                ReleaseArchiveItem("2.3.0", "v2.3.0", "TgwsProxyAndroid 2.3.0", "Обновление интерфейса и стабильности прокси.", "2026-08-10", false, "https://github.com/$cleanRepo/releases/download/v2.3.0/app-release.apk"),
-                ReleaseArchiveItem("2.2.0", "v2.2.0", "TgwsProxyAndroid v2.2.0", "Маршрутизация и легковесный интерфейс.", "2026-08-09", false, "https://github.com/$cleanRepo/releases/download/v2.2.0/app-release.apk"),
-                ReleaseArchiveItem("2.1.2", "v2.1.2", "TgwsProxyAndroid v2.1.2", "Защита сервиса от сбоев в OEM оболочках.", "2026-08-05", false, "https://github.com/$cleanRepo/releases/download/v2.1.2/app-release.apk"),
-                ReleaseArchiveItem("2.1.1", "v2.1.1", "TgwsProxyAndroid v2.1.1", "Фикс инициализации JNA в релизной сборке.", "2026-08-01", false, "https://github.com/$cleanRepo/releases/download/v2.1.1/app-release.apk"),
-                ReleaseArchiveItem("2.0.3", "v2.0.3", "TgwsProxyAndroid v2.0.3", "Базовый релиз v2.0 с Rust Tokio ядром.", "2026-06-20", false, "https://github.com/$cleanRepo/releases/download/v2.0.3/app-release.apk"),
-            )
-        }
+        }.getOrThrow()
     }
 
     private fun checkLatestViaApi(repo: String, currentVersion: String, channel: AppChannel): UpdateInfo? {
@@ -209,8 +193,23 @@ object UpdateChecker {
     }
 
     fun downloadApk(context: Context, info: UpdateInfo): File {
-        val file = File(context.cacheDir, "tgwsproxyandroid-${info.version}.apk")
-        val partial = File(context.cacheDir, "${file.name}.part")
+        val safeVersion = info.version.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
+        // Clean up any stale APKs or partial downloads in cacheDir and cacheDir/updates
+        runCatching {
+            context.cacheDir.listFiles()?.forEach { f ->
+                if (f.isFile && (f.name.endsWith(".apk") || f.name.endsWith(".part"))) {
+                    f.delete()
+                }
+            }
+            updatesDir.listFiles()?.forEach { f ->
+                if (f.isFile && (f.name.endsWith(".apk") || f.name.endsWith(".part"))) {
+                    f.delete()
+                }
+            }
+        }
+        val file = File(updatesDir, "tgwsproxyandroid-$safeVersion.apk")
+        val partial = File(updatesDir, "${file.name}.part")
         partial.delete()
         val requestedUrl = URL(info.apkUrl)
         require(isTrustedGithubHost(requestedUrl.host)) { "Untrusted update host" }
@@ -268,17 +267,52 @@ object UpdateChecker {
         context.startActivity(intent)
     }
 
+    private data class ParsedSemVer(
+        val core: List<Int>,
+        val preReleaseTag: String,
+        val preReleaseNum: Int,
+    )
+
+    private fun parseSemVer(raw: String): ParsedSemVer {
+        val cleaned = raw.trim().removePrefix("v").removePrefix("V")
+        val dashIdx = cleaned.indexOf('-')
+        val coreStr = if (dashIdx >= 0) cleaned.substring(0, dashIdx) else cleaned
+        val preStr = if (dashIdx >= 0) cleaned.substring(dashIdx + 1).lowercase() else ""
+        val core = coreStr.split('.', '_').mapNotNull { it.toIntOrNull() }
+        if (preStr.isEmpty()) {
+            return ParsedSemVer(core = core, preReleaseTag = "", preReleaseNum = 0)
+        }
+        val preTokens = preStr.split('.', '-', '_')
+        val tag = preTokens.firstOrNull { it.any(Char::isLetter) }.orEmpty()
+        val num = preTokens.mapNotNull { it.toIntOrNull() }.firstOrNull() ?: 0
+        return ParsedSemVer(core = core, preReleaseTag = tag, preReleaseNum = num)
+    }
+
+    private fun preReleaseRank(tag: String): Int = when {
+        tag.isEmpty() -> 100 // Final release is newer than any pre-release of the same X.Y.Z
+        tag.startsWith("rc") -> 30
+        tag.startsWith("beta") || tag == "b" -> 20
+        tag.startsWith("alpha") || tag == "a" -> 10
+        else -> 5
+    }
+
     private fun isNewer(latest: String, current: String): Boolean {
-        val latestParts = latest.split('.', '-', '_').mapNotNull { it.toIntOrNull() }
-        val currentParts = current.split('.', '-', '_').mapNotNull { it.toIntOrNull() }
-        val max = maxOf(latestParts.size, currentParts.size)
+        val l = parseSemVer(latest)
+        val c = parseSemVer(current)
+        val max = maxOf(l.core.size, c.core.size)
         for (i in 0 until max) {
-            val left = latestParts.getOrElse(i) { 0 }
-            val right = currentParts.getOrElse(i) { 0 }
+            val left = l.core.getOrElse(i) { 0 }
+            val right = c.core.getOrElse(i) { 0 }
             if (left != right) return left > right
         }
-        return latest != current
+        val leftRank = preReleaseRank(l.preReleaseTag)
+        val rightRank = preReleaseRank(c.preReleaseTag)
+        if (leftRank != rightRank) return leftRank > rightRank
+        if (l.preReleaseNum != c.preReleaseNum) return l.preReleaseNum > c.preReleaseNum
+        return false
     }
+
+    fun isOlder(candidate: String, current: String): Boolean = isNewer(current, candidate)
 
     internal fun isNewerForTest(latest: String, current: String): Boolean = isNewer(latest, current)
 
@@ -335,7 +369,9 @@ object UpdateChecker {
             this.signatures.orEmpty()
         }
         return signatures.mapTo(mutableSetOf()) { signature ->
-            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).joinToString("") { "%02x".format(it) }
+            MessageDigest.getInstance("SHA-256")
+                .digest(signature.toByteArray())
+                .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
         }
     }
 

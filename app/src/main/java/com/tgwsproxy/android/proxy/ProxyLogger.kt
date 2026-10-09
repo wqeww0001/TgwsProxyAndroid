@@ -20,12 +20,16 @@ object ProxyLogger {
     private val fileLock = Any()
 
     @Volatile
+    private var debugBuild = false
+
+    @Volatile
     private var logFile: File? = null
 
     @Volatile
     private var traceFile: File? = null
 
     fun initialize(context: Context) {
+        debugBuild = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         synchronized(fileLock) {
             logFile = File(context.applicationContext.filesDir, "tgwsproxy.log")
             traceFile = File(context.applicationContext.filesDir, "last-exit-trace.txt")
@@ -65,7 +69,7 @@ object ProxyLogger {
         lines.addLast(line)
         while (lines.size > MAX_LINES) lines.pollFirst()
         versionCounter.incrementAndGet()
-        persist(line, throwable)
+        if (level != "D" || debugBuild) persist(line, throwable)
         if (throwable == null) {
             Log.println(priority, TAG, message)
         } else {

@@ -1,11 +1,11 @@
 package com.tgwsproxy.android
 
-import com.tgwsproxy.android.webproxy.WebProxyProtocol
+import com.tgwsproxy.android.util.QrGenerator
 import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Local unit tests for ProxyConfig, UpdateChecker, and Telegram Web Proxy (tproxy-v1) protocol.
+ * Local unit tests for ProxyConfig, UpdateChecker, and QrGenerator.
  */
 class ExampleUnitTest {
     @Test
@@ -35,83 +35,29 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun versionComparison_isNumericAndStable() {
+    fun versionComparison_isNumericAndHandlesPreReleaseCorrectly() {
         assertEquals(true, UpdateChecker.isNewerForTest("2.1.0", "2.0.3"))
         assertEquals(false, UpdateChecker.isNewerForTest("2.0.3", "2.0.3"))
         assertEquals(false, UpdateChecker.isNewerForTest("2.0.2", "2.0.3"))
+        // Stable release with same numeric core is newer than pre-release
+        assertEquals(true, UpdateChecker.isNewerForTest("2.6.0", "2.6.0-beta.1"))
+        assertEquals(false, UpdateChecker.isNewerForTest("2.6.0-beta.1", "2.6.0"))
+        assertEquals(true, UpdateChecker.isNewerForTest("2.6.0-beta.2", "2.6.0-beta.1"))
+        assertEquals(true, UpdateChecker.isOlder("2.5.1", "2.5.2"))
+        assertEquals(false, UpdateChecker.isOlder("2.5.2", "2.5.2"))
     }
 
     @Test
-    fun webProxyBridgeCapability_matchesOfficialSpecVectors() {
-        val raw16 = WebProxyProtocol.decodeSecretBytes("000102030405060708090a0b0c0d0e0f")
-        assertNotNull(raw16)
-        assertEquals(
-            "doO-OToiNqxyID2JxoMc9lwHJ5lpNXQqVLbae-UBS4Y",
-            WebProxyProtocol.deriveBridgeCapability("example.com", "", raw16!!),
-        )
-        assertEquals(
-            "7Aln5tlmlmY5XwwaB5JTUJdo00pvvGUaAVnO4DT5U-k",
-            WebProxyProtocol.deriveBridgeCapability("example.com", "portal", raw16),
-        )
+    fun qrGenerator_encodesShortAndLongProxyLinksUpToVersion10() {
+        val shortLink = "tg://proxy?server=127.0.0.1&port=1443&secret=dd000102030405060708090a0b0c0d0e0f"
+        val mShort = QrGenerator.encode(shortLink)
+        // 81 bytes -> Version 5 (37x37)
+        assertEquals(37, mShort.size)
 
-        val dd17 = WebProxyProtocol.decodeSecretBytes("dd000102030405060708090a0b0c0d0e0f")
-        assertNotNull(dd17)
-        assertEquals(17, dd17!!.size)
-        // Marked secret roundtrip (0x70 prefix)
-        val marked16 = WebProxyProtocol.encodeMarkedSecret(raw16)
-        assertEquals("cAABAgMEBQYHCAkKCwwNDg8", marked16)
-        val marked17 = WebProxyProtocol.encodeMarkedSecret(dd17)
-        assertEquals("cN0AAQIDBAUGBwgJCgsMDQ4P", marked17)
-    }
-
-    @Test
-    fun webProxyLinks_parseRootAndBasePathCorrectly() {
-        val rootLink = "https://t.me/webproxy?server=example.com&secret=000102030405060708090a0b0c0d0e0f"
-        val rootEp = WebProxyProtocol.parseWebProxyLink(rootLink)
-        assertNotNull(rootEp)
-        assertEquals("example.com", rootEp!!.host)
-        assertEquals("", rootEp.basePath)
-        assertEquals("dd000102030405060708090a0b0c0d0e0f", rootEp.localTelegramSecretHex)
-
-        val basePathLink = "https://t.me/webproxy?server=example.com%2Fportal&secret=cAABAgMEBQYHCAkKCwwNDg8"
-        val basePathEp = WebProxyProtocol.parseWebProxyLink(basePathLink)
-        assertNotNull(basePathEp)
-        assertEquals("example.com", basePathEp!!.host)
-        assertEquals("portal", basePathEp.basePath)
-        assertEquals("example.com/portal", basePathEp.serverParam)
-
-        // Base-path link with unmarked secret must be rejected per BASE_PATH.md
-        val invalidUnmarked = "https://t.me/webproxy?server=example.com%2Fportal&secret=000102030405060708090a0b0c0d0e0f"
-        assertNull(WebProxyProtocol.parseWebProxyLink(invalidUnmarked))
-    }
-
-    @Test
-    fun webProxyFrames_encodeAndDecodeBatch() {
-        val hello = WebProxyProtocol.helloFrame()
-        val open = WebProxyProtocol.openFrame(1)
-        val data = WebProxyProtocol.dataFrame(1, byteArrayOf(10, 20, 30))
-        val window = WebProxyProtocol.windowFrame(1, 65536)
-        val close = WebProxyProtocol.closeFrame(1)
-
-        val batch = hello + open + data + window + close
-        val frames = WebProxyProtocol.decodeFrames(batch)
-        assertEquals(5, frames.size)
-        assertEquals(WebProxyProtocol.TYPE_HELLO, frames[0].type)
-        assertEquals(0, frames[0].streamId)
-        assertArrayEquals(byteArrayOf(0x01), frames[0].payload)
-
-        assertEquals(WebProxyProtocol.TYPE_OPEN, frames[1].type)
-        assertEquals(1, frames[1].streamId)
-
-        assertEquals(WebProxyProtocol.TYPE_DATA, frames[2].type)
-        assertEquals(1, frames[2].streamId)
-        assertArrayEquals(byteArrayOf(10, 20, 30), frames[2].payload)
-
-        assertEquals(WebProxyProtocol.TYPE_WINDOW, frames[3].type)
-        assertEquals(65536L, WebProxyProtocol.parseWindowDelta(frames[3].payload))
-
-        assertEquals(WebProxyProtocol.TYPE_CLOSE, frames[4].type)
-        assertEquals(1, frames[4].streamId)
+        val longLink = "tg://proxy?server=127.0.0.1&port=1443&secret=dd000102030405060708090a0b0c0d0e0f&extra=" + "a".repeat(120)
+        val mLong = QrGenerator.encode(longLink)
+        // >154 bytes -> Version 8 (49x49)
+        assertTrue(mLong.size >= 45)
     }
 }
 

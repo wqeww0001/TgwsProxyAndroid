@@ -8,8 +8,8 @@
 
 | Version | Supported |
 | :--- | :--- |
-| `2.4.x` | :white_check_mark: Yes (Активно поддерживается) |
-| `< 2.4.0` | :x: No (Устарело, требуется обновление) |
+| `2.5.x` | :white_check_mark: Yes (Активно поддерживается) |
+| `< 2.5.0` | :x: No (Устарело, требуется обновление) |
 
 ---
 
@@ -28,12 +28,12 @@ If you have discovered a security vulnerability, please report it responsibly:
 ## 🔒 Built-in Security Architecture (Встроенная защита)
 
 1. **Android Keystore Hardware Protection:**
-   - Секретный ключ MTProto шифруется с использованием алгоритма AES-GCM и неэкспортируемого аппаратного ключа Android Keystore.
-   - Секреты исключены из резервных копий Android Cloud Backup (`allowBackup="false"`).
+   - Локальный секретный ключ MTProto и секрет Telegram Web Proxy (`tproxy-v1`) шифруются с использованием алгоритма AES-GCM и неэкспортируемого аппаратного ключа Android Keystore.
+   - Секреты исключены из резервных копий Android Cloud Backup (`allowBackup="false"`) и помечаются флагом `ClipDescription.EXTRA_IS_SENSITIVE` при копировании в буфер обмена на Android 13+.
 
 2. **Tamper-proof Auto Updates:**
    - Каждое загруженное обновление перед установкой верифицирует `packageName` и SHA-256 цифровой сертификат подписи разработчика (`signingCertificateHistory`), исключая подмену APK.
 
-3. **Strict TLS & Local Isolation:**
-   - Все исходящие TLS/WebSocket соединения валидируются по доверенным корневым сертификатам публичной WebPKI.
-   - Локальный прокси по умолчанию привязан строго к петлевому интерфейсу `127.0.0.1`, делая его недоступным извне без явного включения пользователем режима раздачи LAN.
+3. **Strict TLS, RFC 6455 & Local Isolation:**
+   - Все исходящие TLS/WebSocket соединения валидируются по доверенным корневым сертификатам публичной WebPKI и проверяют `Sec-WebSocket-Accept` (RFC 6455).
+   - Локальный прокси привязан строго к петлевому интерфейсу `127.0.0.1:1443`, делая его недоступным из внешней сети.
