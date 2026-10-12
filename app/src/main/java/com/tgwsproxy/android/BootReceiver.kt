@@ -1,8 +1,12 @@
 package com.tgwsproxy.android
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.tgwsproxy.android.proxy.ProxyLogger
 
@@ -21,6 +25,13 @@ class BootReceiver : BroadcastReceiver() {
                 .putBoolean(UpdateChecker.PREF_REOPEN_AFTER_UPDATE, false)
                 .putBoolean(UpdateChecker.PREF_WAS_RUNNING_BEFORE_UPDATE, false)
                 .apply()
+            runCatching {
+                java.io.File(context.cacheDir, "updates").listFiles()?.forEach { f ->
+                    if (f.isFile && (f.name.endsWith(".apk") || f.name.endsWith(".part"))) {
+                        f.delete()
+                    }
+                }
+            }
         }
 
         if (autoStartEnabled || wasRunningBeforeUpdate) {
@@ -35,7 +46,14 @@ class BootReceiver : BroadcastReceiver() {
                 }
                 ContextCompat.startForegroundService(context, serviceIntent)
                 ProxyLogger.i("Auto-start requested after $action")
-            }.onFailure { ProxyLogger.e("Auto-start failed: ${it.message ?: it.javaClass.simpleName}") }
+            }.onFailure {
+                val reason = it.message ?: it.javaClass.simpleName
+                ProxyLogger.e("Auto-start failed: $reason")
+                if (action == Intent.ACTION_BOOT_COMPLETED) {
+                    val ru = preferences.getString("ui_language", "ru") != "en"
+                    notifyAutostartFailed(context, ru, reason)
+                }
+            }
         }
 
         if (reopenAfterUpdate) {
@@ -47,5 +65,36 @@ class BootReceiver : BroadcastReceiver() {
                 context.startActivity(activityIntent)
             }.onFailure { ProxyLogger.w("Reopen after update failed: ${it.message}") }
         }
+    }
+
+    private fun notifyAutostartFailed(context: Context, ru: Boolean, reason: String) {
+        runCatching {
+            val manager = context.getSystemService(NotificationManager::class.java) ?: return
+            manager.createNotificationChannel(
+                NotificationChannel(AUTOSTART_CHANNEL_ID, "TgwsProxy", NotificationManager.IMPORTANCE_DEFAULT),
+            )
+            val openApp = PendingIntent.getActivity(
+                context,
+                0,
+                Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notification = NotificationCompat.Builder(context, AUTOSTART_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(if (ru) "Автозапуск прокси не выполнен" else "Proxy autostart failed")
+                .setContentText(
+                    if (ru) "Откройте приложение и запустите прокси вручную. $reason"
+                    else "Open the app and start the proxy manually. $reason",
+                )
+                .setContentIntent(openApp)
+                .setAutoCancel(true)
+                .build()
+            manager.notify(AUTOSTART_FAILED_NOTIFICATION_ID, notification)
+        }.onFailure { ProxyLogger.w("Could not post autostart failure notification: ${it.message}") }
+    }
+
+    private companion object {
+        const val AUTOSTART_CHANNEL_ID = "proxy"
+        const val AUTOSTART_FAILED_NOTIFICATION_ID = 9001
     }
 }

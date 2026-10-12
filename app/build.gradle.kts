@@ -18,8 +18,8 @@ android {
         applicationId = "com.tgwsproxy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 32
-        versionName = "2.5.3"
+        versionCode = 33
+        versionName = "2.5.4"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -50,8 +50,9 @@ android {
             isShrinkResources = true
             val releaseSigning = signingConfigs.getByName("release")
             val hasReleaseKey = releaseSigning.storeFile?.exists() == true && !releaseSigning.storePassword.isNullOrBlank()
-            if (!hasReleaseKey && System.getenv("RELEASE_REQUIRED") == "true") {
-                throw GradleException("RELEASE_REQUIRED=true, but release signing keystore or password is missing")
+            val releaseTaskRequested = gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }
+            if (!hasReleaseKey && (System.getenv("RELEASE_REQUIRED") == "true" || releaseTaskRequested)) {
+                throw GradleException("Release signing keystore or password is missing (set RELEASE_STORE_FILE and RELEASE_STORE_PASSWORD). Refusing to sign a release with the debug key.")
             }
             signingConfig = if (hasReleaseKey) {
                 releaseSigning
@@ -95,6 +96,7 @@ dependencies {
         artifact { type = "aar" }
     }
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

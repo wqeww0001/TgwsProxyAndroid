@@ -323,6 +323,7 @@ class ProxyService : Service() {
                     }
                 }
                 val result = synchronized(NATIVE_CALL_LOCK) {
+                    ProxyConfig.resolvePort(this@ProxyService)
                     configureAndStartNative(
                         secret,
                         cfDomain,
@@ -344,7 +345,7 @@ class ProxyService : Service() {
                     ProxyServiceStatus.isRunning = true
                     ProxyServiceStatus.isStarting = false
                     ProxyTileService.requestTileUpdate(this@ProxyService)
-                    ProxyLogger.i("Proxy core started on ${ProxyConfig.HOST}:${ProxyConfig.PORT}")
+                    ProxyLogger.i("Proxy core started on ${ProxyConfig.HOST}:${ProxyConfig.port}")
                     AppDiagnostics.setProcessState(this, "proxy=running")
                 }
             } catch (t: Throwable) {
@@ -378,7 +379,7 @@ class ProxyService : Service() {
         NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = cfPriority, userDomain = cfDomain)
         return NativeProxy.startProxy(
             host = ProxyConfig.HOST,
-            port = ProxyConfig.PORT,
+            port = ProxyConfig.port,
             dcIps = ProxyConfig.dcMappingsForNative(dcIps),
             secret = secret,
             verbose = BuildConfig.DEBUG,
@@ -624,7 +625,7 @@ class ProxyService : Service() {
             NativeProxy.isListening()
         }
     }.getOrElse {
-        isPortOpen(ProxyConfig.HOST, ProxyConfig.PORT, 700)
+        isPortOpen(ProxyConfig.HOST, ProxyConfig.port, 700)
     }
 
     private fun isPortOpen(host: String, port: Int, timeoutMs: Int): Boolean {
@@ -700,12 +701,14 @@ class ProxyService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val uptime = formatUptime(System.currentTimeMillis() - startTime)
-        val title = if (isRuLocale) "TG WS Proxy активен" else "TG WS Proxy active"
-        val stopLabel = if (isRuLocale) "Остановить" else "Stop"
+        val lang = AppLanguage.from(getSharedPreferences(PROXY_PREFS, Context.MODE_PRIVATE).getString("ui_language", "ru"))
+        val ui = strings(lang)
+        val title = "TG WS Proxy · ${ui.active}"
+        val stopLabel = ui.stop
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
-            .setContentText("${ProxyConfig.HOST}:${ProxyConfig.PORT} | $uptime | $content")
+            .setContentText("${ProxyConfig.HOST}:${ProxyConfig.port} | $uptime | $content")
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, stopLabel, stopIntent)
             .setOngoing(true)

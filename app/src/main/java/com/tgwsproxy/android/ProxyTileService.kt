@@ -86,28 +86,28 @@ class ProxyTileService : TileService() {
         val isRunning = ProxyServiceStatus.isRunning
         val isStarting = ProxyServiceStatus.isStarting
         val prefs = getSharedPreferences("proxy", MODE_PRIVATE)
-        val isRu = (prefs.getString("ui_language", "ru") ?: "ru") == "ru"
+        val ui = strings(AppLanguage.from(prefs.getString("ui_language", "ru")))
 
         when {
             isRunning -> {
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "${ProxyConfig.HOST}:${ProxyConfig.PORT}"
+                    tile.subtitle = "${ProxyConfig.HOST}:${ProxyConfig.port}"
                 }
             }
             isStarting -> {
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = if (isRu) "Запуск..." else "Starting..."
+                    tile.subtitle = ui.starting
                 }
             }
             else -> {
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "TgwsProxy"
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = if (isRu) "Остановлен" else "Stopped"
+                    tile.subtitle = ui.stopped
                 }
             }
         }

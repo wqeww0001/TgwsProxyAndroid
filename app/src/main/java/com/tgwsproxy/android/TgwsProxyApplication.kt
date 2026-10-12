@@ -7,6 +7,7 @@ class TgwsProxyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         ProxyLogger.initialize(this)
+        ProxyConfig.loadSavedPort(this)
         AppDiagnostics.recordPreviousExits(this)
     }
 }

@@ -11,6 +11,7 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -19,6 +20,7 @@ import android.os.PersistableBundle
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -54,6 +56,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -135,6 +142,8 @@ import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.tgwsproxy.android.AppChannel
 import com.tgwsproxy.android.ReleaseArchiveItem
+import com.tgwsproxy.android.benchmark.DcPingResult
+import com.tgwsproxy.android.benchmark.DomainBenchmark
 import com.tgwsproxy.android.config.ProxyProfile
 import com.tgwsproxy.android.proxy.ProxyLogger
 import com.tgwsproxy.android.traffic.TrafficStatsManager
@@ -159,8 +168,8 @@ class MainActivity : ComponentActivity() {
         requestStoragePermission()
         if (intent?.getBooleanExtra("updated_just_now", false) == true) {
             intent?.removeExtra("updated_just_now")
-            val isRu = getProxyPref(LANGUAGE_PREF, AppLanguage.Ru.code) != AppLanguage.En.code
-            val msg = if (isRu) {
+            val lang = AppLanguage.from(getProxyPref(LANGUAGE_PREF, AppLanguage.Ru.code))
+            val msg = if (lang.isCyrillicOrRu) {
                 "Обновлено до v${UpdateChecker.currentVersion(this)}"
             } else {
                 "Updated to v${UpdateChecker.currentVersion(this)}"
@@ -170,10 +179,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = LocalContext.current
             var themeMode by rememberSaveable {
-                mutableStateOf(AppThemeMode.from(context.getProxyPref(THEME_PREF, AppThemeMode.Light.name)))
+                mutableStateOf(AppThemeMode.from(context.getProxyPref(THEME_PREF, AppThemeMode.Dark.name)))
             }
             TgwsProxyAndroidTheme(
-                darkTheme = themeMode != AppThemeMode.Light,
+                darkTheme = true,
                 themeName = themeMode.name,
             ) {
                 ProxyScreen(
@@ -207,19 +216,13 @@ data class ProxyStatus(
     val isStarting: Boolean = false,
 )
 
-private enum class AppLanguage(val code: String) {
-    Ru("ru"),
-    En("en"),
-}
-
 private enum class AppThemeMode {
-    Light,
     Dark,
     Aurora,
     Sunset;
 
     companion object {
-        fun from(value: String): AppThemeMode = entries.firstOrNull { it.name == value } ?: Light
+        fun from(value: String): AppThemeMode = entries.firstOrNull { it.name == value } ?: Dark
     }
 }
 
@@ -250,197 +253,16 @@ private data class LatestStats(
     val down: String = "0B",
 )
 
-private data class UiStrings(
-    val menu: String,
-    val language: String,
-    val russian: String,
-    val english: String,
-    val active: String,
-    val stopped: String,
-    val uptime: String,
-    val service: String,
-    val online: String,
-    val localEndpoint: String,
-    val secret: String,
-    val currentLink: String,
-    val proxyOptions: String,
-    val fakeTlsDomain: String,
-    val emptyDdSecret: String,
-    val cfWorkerDomain: String,
-    val emptyDirectFallback: String,
-    val cloudflareCdn: String,
-    val wsPool: String,
-    val wsPoolHint: String,
-    val updateCheck: String,
-    val requiredUpdate: String,
-    val working: String,
-    val installRequiredUpdate: String,
-    val checkForUpdate: String,
-    val debugLog: String,
-    val noEventsYet: String,
-    val copyTelegramLink: String,
-    val openInTelegram: String,
-    val start: String,
-    val stop: String,
-    val linkCopied: String,
-    val downloadLogs: String,
-    val logsSaved: String,
-    val logsSaveFailed: String,
-    val currentVersion: String,
-    val updateCheckFailed: String,
-    val installToContinue: String,
-    val downloadingRequiredUpdate: String,
-    val checkingGithub: String,
-    val noUpdateFound: String,
-    val downloading: String,
-    val installerOpened: String,
-    val updateFailed: String,
-    val autoUpdates: String,
-    val autoUpdatesEnabled: String,
-    val autoUpdatesWarning: String,
-    val batteryProtection: String,
-    val batteryRestricted: String,
-    val batteryUnrestricted: String,
-    val allowBackgroundWork: String,
-    val disableAnyway: String,
-    val keepEnabled: String,
-    val updateInterval: String,
-    val minutesShort: String,
-    val hoursShort: String,
-    val splashSubtitle: String,
-)
-
-private fun strings(language: AppLanguage): UiStrings = when (language) {
-    AppLanguage.Ru -> UiStrings(
-        menu = "Меню",
-        language = "Язык",
-        russian = "Русский",
-        english = "English",
-        active = "Работает",
-        stopped = "Остановлен",
-        uptime = "Аптайм",
-        service = "Сервис",
-        online = "Онлайн",
-        localEndpoint = "Локальный адрес",
-        secret = "Секрет",
-        currentLink = "Текущая ссылка",
-        proxyOptions = "Настройки прокси",
-        fakeTlsDomain = "Fake TLS домен",
-        emptyDdSecret = "пусто = dd secret",
-        cfWorkerDomain = "Cloudflare домен",
-        emptyDirectFallback = "пусто = авто CF + TCP fallback",
-        cloudflareCdn = "Cloudflare CDN",
-        wsPool = "Пул быстрых соединений",
-        wsPoolHint = "Больше соединений — ниже задержка, но выше расход батареи",
-        updateCheck = "Проверка обновлений",
-        requiredUpdate = "Доступно обновление",
-        working = "Работаю...",
-        installRequiredUpdate = "Скачать и установить",
-        checkForUpdate = "Проверить обновления",
-        debugLog = "Лог отладки",
-        noEventsYet = "Пока нет событий",
-        copyTelegramLink = "Скопировать ссылку Telegram",
-        openInTelegram = "Открыть в Telegram",
-        start = "Запустить",
-        stop = "Остановить",
-        linkCopied = "Ссылка скопирована",
-        downloadLogs = "Скачать логи",
-        logsSaved = "Логи сохранены в Загрузки",
-        logsSaveFailed = "Не удалось сохранить логи",
-        currentVersion = "Текущая версия",
-        updateCheckFailed = "Не удалось проверить обновления. Текущая версия",
-        installToContinue = "Установи его, чтобы продолжить.",
-        downloadingRequiredUpdate = "Скачиваю обязательное обновление...",
-        checkingGithub = "Проверяю GitHub Releases...",
-        noUpdateFound = "Обновлений нет. Текущая версия",
-        downloading = "Скачиваю",
-        installerOpened = "Открыт установщик версии",
-        updateFailed = "Ошибка обновления",
-        autoUpdates = "Автообновления",
-        autoUpdatesEnabled = "Автопроверка включена",
-        autoUpdatesWarning = "Автопроверка отключена. Прокси продолжит работать, обновления можно проверять вручную.",
-        batteryProtection = "Работа в фоне",
-        batteryRestricted = "Система может принудительно закрыть прокси",
-        batteryUnrestricted = "Ограничения батареи отключены",
-        allowBackgroundWork = "Разрешить постоянную работу",
-        disableAnyway = "Отключить",
-        keepEnabled = "Оставить",
-        updateInterval = "Интервал проверки",
-        minutesShort = "мин",
-        hoursShort = "ч",
-        splashSubtitle = "Rust core, Cloudflare fallback",
-    )
-    AppLanguage.En -> UiStrings(
-        menu = "Menu",
-        language = "Language",
-        russian = "Русский",
-        english = "English",
-        active = "Active",
-        stopped = "Stopped",
-        uptime = "Uptime",
-        service = "Service",
-        online = "Online",
-        localEndpoint = "Local endpoint",
-        secret = "Secret",
-        currentLink = "Current link",
-        proxyOptions = "Proxy options",
-        fakeTlsDomain = "Fake TLS domain",
-        emptyDdSecret = "empty = dd secret",
-        cfWorkerDomain = "Cloudflare domain",
-        emptyDirectFallback = "empty = auto CF + TCP fallback",
-        cloudflareCdn = "Cloudflare CDN",
-        wsPool = "Fast connection pool",
-        wsPoolHint = "More connections reduce latency but use more battery",
-        updateCheck = "Update check",
-        requiredUpdate = "Update available",
-        working = "Working...",
-        installRequiredUpdate = "Download and install",
-        checkForUpdate = "Check for update",
-        debugLog = "Debug log",
-        noEventsYet = "No events yet",
-        copyTelegramLink = "Copy Telegram link",
-        openInTelegram = "Open in Telegram",
-        start = "Start",
-        stop = "Stop",
-        linkCopied = "Link copied",
-        downloadLogs = "Download logs",
-        logsSaved = "Logs saved to Downloads",
-        logsSaveFailed = "Failed to save logs",
-        currentVersion = "Current version",
-        updateCheckFailed = "Update check failed. Current version",
-        installToContinue = "Install it to continue.",
-        downloadingRequiredUpdate = "Downloading required update...",
-        checkingGithub = "Checking GitHub Releases...",
-        noUpdateFound = "No update found. Current version",
-        downloading = "Downloading",
-        installerOpened = "Installer opened for version",
-        updateFailed = "Update failed",
-        autoUpdates = "Auto updates",
-        autoUpdatesEnabled = "Auto check enabled",
-        autoUpdatesWarning = "Auto check is disabled. The proxy will keep working and updates can be checked manually.",
-        batteryProtection = "Background operation",
-        batteryRestricted = "The system may force-stop the proxy",
-        batteryUnrestricted = "Battery restrictions are disabled",
-        allowBackgroundWork = "Allow continuous operation",
-        disableAnyway = "Disable",
-        keepEnabled = "Keep enabled",
-        updateInterval = "Check interval",
-        minutesShort = "min",
-        hoursShort = "h",
-        splashSubtitle = "Rust core, Cloudflare fallback",
-    )
-}
-
 @Composable
 private fun ProxyScreen(
-    themeMode: AppThemeMode = AppThemeMode.Light,
+    themeMode: AppThemeMode = AppThemeMode.Dark,
     onThemeModeChange: (AppThemeMode) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var language by rememberSaveable {
         mutableStateOf(
-            if (context.getProxyPref(LANGUAGE_PREF, AppLanguage.Ru.code) == AppLanguage.En.code) AppLanguage.En else AppLanguage.Ru,
+            AppLanguage.from(context.getProxyPref(LANGUAGE_PREF, AppLanguage.Ru.code)),
         )
     }
     val text = strings(language)
@@ -495,6 +317,16 @@ private fun ProxyScreen(
     var showDisableAutoUpdateWarning by rememberSaveable { mutableStateOf(false) }
     var showSplash by rememberSaveable { mutableStateOf(true) }
     var batteryUnrestricted by remember { mutableStateOf(context.isIgnoringBatteryOptimizations()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                batteryUnrestricted = context.isIgnoringBatteryOptimizations()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val isProxyRunning by remember { derivedStateOf { proxyStatusState.value.isRunning } }
     val isProxyStarting by remember { derivedStateOf { proxyStatusState.value.isStarting } }
     val isProxyEditable by remember { derivedStateOf { !proxyStatusState.value.isRunning && !proxyStatusState.value.isStarting } }
@@ -897,7 +729,7 @@ private fun ProxyScreen(
                         }
                         Column {
                             Text("TgwsProxy", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                            Text("127.0.0.1:1443", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${ProxyConfig.HOST}:${ProxyConfig.port}", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Row(
@@ -915,9 +747,9 @@ private fun ProxyScreen(
                                 ),
                         )
                         Text(
-                            if (isProxyRunning) (if (language == AppLanguage.Ru) "Активен" else "Active")
-                            else if (isProxyStarting) (if (language == AppLanguage.Ru) "Запуск..." else "Starting...")
-                            else (if (language == AppLanguage.Ru) "Остановлен" else "Stopped"),
+                            if (isProxyRunning) text.active
+                            else if (isProxyStarting) text.starting
+                            else text.stopped,
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Medium,
                             color = if (isProxyRunning) SignalMint else if (isProxyStarting) SignalAmber else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -937,10 +769,10 @@ private fun ProxyScreen(
                 AppTab.entries.forEachIndexed { index, tab ->
                     val isSelected = pagerState.currentPage == index
                     val tabName = when (tab) {
-                        AppTab.Home -> if (language == AppLanguage.Ru) "Главная" else "Home"
-                        AppTab.Settings -> if (language == AppLanguage.Ru) "Настройки" else "Settings"
-                        AppTab.Logs -> if (language == AppLanguage.Ru) "Журнал" else "Logs"
-                        AppTab.Help -> if (language == AppLanguage.Ru) "Справка" else "Help"
+                        AppTab.Home -> text.tabHome
+                        AppTab.Settings -> text.tabSettings
+                        AppTab.Logs -> text.tabLogs
+                        AppTab.Help -> text.tabHelp
                     }
                     val tabIcon = when (tab) {
                         AppTab.Home -> Icons.Rounded.Home
@@ -1006,7 +838,7 @@ private fun ProxyScreen(
                             },
                             onStart = {
                                 if (!ProxyConfig.isValidDcMappings(dcMappings)) {
-                                    Toast.makeText(context, if (language == AppLanguage.Ru) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, if (language.isCyrillicOrRu) "Исправьте список DC → IP" else "Fix the DC → IP list", Toast.LENGTH_SHORT).show()
                                 } else {
                                     context.startProxyService(
                                         secret = secret,
@@ -1034,7 +866,7 @@ private fun ProxyScreen(
                                     telegramClients = context.findTelegramClients(link)
                                     when (telegramClients.size) {
                                         0 -> if (!context.openTelegramWithSystemChooser(link)) {
-                                            Toast.makeText(context, if (language == AppLanguage.Ru) "Telegram не найден" else "Telegram app not found", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, if (language.isCyrillicOrRu) "Telegram не найден" else "Telegram app not found", Toast.LENGTH_SHORT).show()
                                         }
                                         1 -> {
                                             context.saveProxyPref(TELEGRAM_CLIENT_PREF, telegramClients.first().packageName)
@@ -1147,7 +979,7 @@ private fun ProxyScreen(
                             onThemeModeChange = onThemeModeChange,
                             onForgetTelegramClient = {
                                 context.saveProxyPref(TELEGRAM_CLIENT_PREF, "")
-                                Toast.makeText(context, if (language == AppLanguage.Ru) "Выбор Telegram сброшен" else "Telegram choice reset", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, if (language.isCyrillicOrRu) "Выбор Telegram сброшен" else "Telegram choice reset", Toast.LENGTH_SHORT).show()
                             },
                             onCheckUpdate = { runUpdateCheck(manual = true) },
                             onInstallUpdate = { installAvailableUpdate() },
@@ -1163,7 +995,6 @@ private fun ProxyScreen(
 
 @Composable
 private fun appBackgroundBrush(mode: AppThemeMode): Brush = when (mode) {
-    AppThemeMode.Light -> Brush.verticalGradient(listOf(Color(0xFFF4F5F8), Color(0xFFECEFF4)))
     AppThemeMode.Dark -> Brush.verticalGradient(listOf(Color(0xFF111215), Color(0xFF16181F)))
     AppThemeMode.Aurora -> Brush.verticalGradient(listOf(AuroraBackground, Color(0xFF111D21)))
     AppThemeMode.Sunset -> Brush.verticalGradient(listOf(SunsetBackground, Color(0xFF1F1622)))
@@ -1191,7 +1022,7 @@ private fun HomePage(
     val logs = logsProvider()
     val trafficSummary = trafficProvider()
     val stats = remember(logs) { latestStats(logs) }
-    PageTitle(if (text.start == "Запустить") "Главная" else "Home", "127.0.0.1:1443 · MTProto WS Proxy")
+    PageTitle(text.tabHome, "${ProxyConfig.HOST}:${ProxyConfig.port} · MTProto WS Proxy")
     if (availableUpdate != null) {
         UpdateBannerCard(
             language = language,
@@ -1210,10 +1041,10 @@ private fun HomePage(
         onOpenTelegram = onOpenTelegram,
         onCopyLink = onCopyLink,
     )
-    TrafficStatsCard(language, trafficSummary, onResetTraffic)
+    TrafficStatsCard(text, trafficSummary, onResetTraffic)
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile(
-            if (text.start == "Запустить") "Пул WebSocket" else "WS Pool",
+            if (language.isCyrillicOrRu) "Пул WebSocket" else "WS Pool",
             "${stats.ws} active",
             Modifier.weight(1f),
         )
@@ -1229,8 +1060,8 @@ private fun HomePage(
         )
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        StatTile(if (text.start == "Запустить") "Сессии" else "Active", stats.active, Modifier.weight(1f))
-        StatTile(if (text.start == "Запустить") "Ошибки" else "Errors", stats.errors, Modifier.weight(1f), color = getErrorColor(stats.errors))
+        StatTile(if (language.isCyrillicOrRu) "Сессии" else "Active", stats.active, Modifier.weight(1f))
+        StatTile(if (language.isCyrillicOrRu) "Ошибки" else "Errors", stats.errors, Modifier.weight(1f), color = getErrorColor(stats.errors))
     }
     LogsCard(text, logs.takeLast(6))
 }
@@ -1360,7 +1191,8 @@ private fun SettingsPage(
     val context = LocalContext.current
     PageTitle(text.proxyOptions, text.currentVersion + ": " + UpdateChecker.currentVersion(context) + " (Build #" + UpdateChecker.currentVersionCode(context) + ")")
     LanguageCard(text, language, onLanguageChange)
-    ThemePickerCard(language, themeMode, onThemeModeChange)
+    ThemePickerCard(text, themeMode, onThemeModeChange)
+    DcBenchmarkCard(text = text)
     BuildMetadataCard(language, appChannel)
     UpdateChannelCard(language, appChannel, onChannelChange, onOpenVersionArchive)
     PresetsAndBackupCard(
@@ -1414,11 +1246,10 @@ private fun SettingsPage(
 
 @Composable
 private fun TrafficStatsCard(
-    language: AppLanguage,
+    text: UiStrings,
     summary: TrafficSummary,
     onReset: () -> Unit,
 ) {
-    val isRu = language == AppLanguage.Ru
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -1432,12 +1263,12 @@ private fun TrafficStatsCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    if (isRu) "Статистика трафика" else "Traffic Statistics",
+                    text.trafficStats,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 TextButton(onClick = onReset) {
-                    Text(if (isRu) "Сбросить" else "Reset", style = MaterialTheme.typography.labelSmall)
+                    Text(text.reset, style = MaterialTheme.typography.labelSmall)
                 }
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1447,7 +1278,7 @@ private fun TrafficStatsCard(
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(if (isRu) "Сегодня" else "Today", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(text.today, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("↓ ${summary.formattedTodayDown()}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = SignalMint)
                         Text("↑ ${summary.formattedTodayUp()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -1458,7 +1289,7 @@ private fun TrafficStatsCard(
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(if (isRu) "За всё время" else "All Time", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(text.allTime, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("↓ ${summary.formattedTotalDown()}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = SignalBlue)
                         Text("↑ ${summary.formattedTotalUp()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -1609,7 +1440,7 @@ private fun ImportConfigDialog(
                     value = rawText,
                     onValueChange = { rawText = it; errorText = null },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("tg://proxy?server=127.0.0.1&port=1443&secret=...") },
+                    placeholder = { Text("tg://proxy?server=127.0.0.1&port=${ProxyConfig.port}&secret=...") },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 )
                 errorText?.let { err ->
@@ -1638,6 +1469,8 @@ private fun ImportConfigDialog(
 
 @Composable
 private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOpenSettings: () -> Unit) {
+    val context = LocalContext.current
+    val isRu = text.start == "Запустить"
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -1655,6 +1488,18 @@ private fun BatteryOptimizationCard(text: UiStrings, unrestricted: Boolean, onOp
                 FilledTonalButton(modifier = Modifier.fillMaxWidth(), onClick = onOpenSettings) {
                     ButtonText(text.allowBackgroundWork)
                 }
+            }
+            Text(
+                if (isRu) {
+                    "На MIUI/HyperOS, ColorOS, Funtouch и EMUI автозапуск настраивается отдельно от Android. Включите «Автозапуск» и режим «Без ограничений» для TgwsProxy."
+                } else {
+                    "On MIUI/HyperOS, ColorOS, Funtouch and EMUI, autostart is configured separately from Android. Enable Autostart and set battery to No restrictions for TgwsProxy."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = { context.openAutostartSettings() }) {
+                ButtonText(if (isRu) "Открыть настройки автозапуска" else "Open autostart settings")
             }
         }
     }
@@ -1677,16 +1522,31 @@ private fun PoolSizeCard(text: UiStrings, poolSize: Int, enabled: Boolean, onPoo
                         Button(
                             modifier = Modifier.weight(1f),
                             enabled = enabled,
+                            colors = ButtonDefaults.buttonColors(
+                                disabledContainerColor = MaterialTheme.colorScheme.primary,
+                                disabledContentColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
                             onClick = { onPoolSizeChange(size) },
                         ) { Text(size.toString()) }
                     } else {
                         FilledTonalButton(
                             modifier = Modifier.weight(1f),
                             enabled = enabled,
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
                             onClick = { onPoolSizeChange(size) },
                         ) { Text(size.toString()) }
                     }
                 }
+            }
+            if (!enabled) {
+                Text(
+                    if (text.start == "Запустить") "Остановите прокси, чтобы изменить размер пула" else "Stop the proxy to change the pool size",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -1738,11 +1598,11 @@ private fun HelpPage(language: AppLanguage) {
     HelpCategory(
         title = if (ru) "Подключение" else "Connection",
         items = if (ru) listOf(
-            "Запуск" to "Нажми Start и дождись статуса Active. Локальный адрес остаётся 127.0.0.1:1443.",
+            "Запуск" to "Нажми Start и дождись статуса Active. Локальный адрес показан на главном экране.",
             "Telegram" to "Нажми открыть в Telegram и включи добавленный прокси. Повторно удалять его обычно не нужно.",
             "Если висит подключение" to "Открой логи: если down растёт, данные идут. Если только err или timeout, проверь сеть и попробуй Stop/Start.",
         ) else listOf(
-            "Start" to "Tap Start and wait for Active. The local endpoint stays 127.0.0.1:1443.",
+            "Start" to "Tap Start and wait for Active. The local endpoint is shown on the Home screen.",
             "Telegram" to "Open the Telegram link and enable the added proxy. You normally do not need to delete it again.",
             "Stuck connecting" to "Check logs: if down grows, data is flowing. If only err or timeout grows, check the network and try Stop/Start.",
         ),
@@ -1918,7 +1778,7 @@ private fun UpdateChannelCard(
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                             color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                            maxLines = 2,
                         )
                     }
                 }
@@ -2135,46 +1995,28 @@ private fun LanguageCard(text: UiStrings, language: AppLanguage, onLanguageChang
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
     ) {
-        Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.Ru, onClick = { onLanguageChange(AppLanguage.Ru) }) {
-                ButtonText(text.russian)
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text.language, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    language.nativeName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
             }
-            OutlinedButton(modifier = Modifier.weight(1f), enabled = language != AppLanguage.En, onClick = { onLanguageChange(AppLanguage.En) }) {
-                ButtonText(text.english)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(if (language == AppLanguage.Ru) "Оформление" else "Appearance", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            AppThemeMode.entries.chunked(2).forEach { row ->
+            AppLanguage.entries.chunked(3).forEach { row ->
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { mode ->
-                        val label = when (mode) {
-                            AppThemeMode.Light -> if (language == AppLanguage.Ru) "Светлая" else "Light"
-                            AppThemeMode.Dark -> if (language == AppLanguage.Ru) "Тёмная" else "Dark"
-                            AppThemeMode.Aurora -> if (language == AppLanguage.Ru) "Аврора" else "Aurora"
-                            AppThemeMode.Sunset -> if (language == AppLanguage.Ru) "Закат" else "Sunset"
-                        }
-                        val swatchColor = when (mode) {
-                            AppThemeMode.Light -> LightPrimary
-                            AppThemeMode.Dark -> DarkPrimary
-                            AppThemeMode.Aurora -> AuroraPrimary
-                            AppThemeMode.Sunset -> SunsetPrimary
-                        }
-                        val isSelected = selected == mode
+                    row.forEach { item ->
+                        val isSelected = item == language
                         OutlinedButton(
                             modifier = Modifier.weight(1f),
-                            onClick = { onSelect(mode) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                            onClick = { onLanguageChange(item) },
                             border = BorderStroke(
                                 if (isSelected) 2.dp else 1.dp,
                                 if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
@@ -2183,17 +2025,173 @@ private fun ThemePickerCard(language: AppLanguage, selected: AppThemeMode, onSel
                                 containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent,
                             ),
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(swatchColor),
-                            )
-                            Spacer(Modifier.size(8.dp))
-                            ButtonText(
-                                label,
+                            Text(
+                                text = item.nativeName,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                 color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
                             )
+                        }
+                    }
+                    repeat(3 - row.size) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemePickerCard(text: UiStrings, selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(text.appearance, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AppThemeMode.entries.forEach { mode ->
+                    val label = when (mode) {
+                        AppThemeMode.Dark -> text.themeDark
+                        AppThemeMode.Aurora -> text.themeAurora
+                        AppThemeMode.Sunset -> text.themeSunset
+                    }
+                    val swatchColor = when (mode) {
+                        AppThemeMode.Dark -> DarkPrimary
+                        AppThemeMode.Aurora -> AuroraPrimary
+                        AppThemeMode.Sunset -> SunsetPrimary
+                    }
+                    val isSelected = selected == mode
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                        onClick = { onSelect(mode) },
+                        border = BorderStroke(
+                            if (isSelected) 2.dp else 1.dp,
+                            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        ),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent,
+                        ),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(swatchColor),
+                        )
+                        Spacer(Modifier.size(6.dp))
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DcBenchmarkCard(text: UiStrings) {
+    val scope = rememberCoroutineScope()
+    var running by remember { mutableStateOf(false) }
+    var results by remember { mutableStateOf<List<DcPingResult>>(emptyList()) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(text.dcTestTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                text.dcTestSubtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FilledTonalButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !running,
+                onClick = {
+                    running = true
+                    scope.launch {
+                        results = runCatching { DomainBenchmark.runDcBenchmark() }.getOrDefault(emptyList())
+                        running = false
+                    }
+                },
+            ) {
+                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(8.dp))
+                ButtonText(if (running) text.dcTestRunning else text.dcTestRun)
+            }
+            if (running) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (results.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    results.forEach { dc ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column {
+                                    Text(
+                                        "DC${dc.dc} · ${dc.location}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        "${dc.wssHost} / ${dc.directIp}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    val wssLabel = if (dc.wssPingMs > 0) "WSS ${dc.wssPingMs} ms" else "WSS —"
+                                    val tcpLabel = if (dc.tcpPingMs > 0) "TCP ${dc.tcpPingMs} ms" else "TCP —"
+                                    Text(
+                                        wssLabel,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        color = when {
+                                            dc.wssPingMs in 1..150 -> SignalMint
+                                            dc.wssPingMs > 150 -> SignalAmber
+                                            else -> MaterialTheme.colorScheme.error
+                                        },
+                                    )
+                                    Text(
+                                        tcpLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = when {
+                                            dc.tcpPingMs in 1..150 -> SignalMint
+                                            dc.tcpPingMs > 150 -> SignalAmber
+                                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -2296,9 +2294,16 @@ private fun AutoUpdateCard(
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
                         enabled = enabled,
+                        contentPadding = PaddingValues(horizontal = 4.dp),
                         onClick = { onUnitChange(option) },
                     ) {
-                        ButtonText(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
                     }
                 }
             }
@@ -2927,9 +2932,9 @@ private fun ProxyHeroCard(
                     )
                     Text(
                         when {
-                            status.isRunning -> if (text.start == "Запустить") "Подключено" else "Connected"
-                            status.isStarting -> if (text.start == "Запустить") "Запуск..." else "Starting..."
-                            else -> if (text.start == "Запустить") "Отключено" else "Stopped"
+                            status.isRunning -> text.connected
+                            status.isStarting -> text.starting
+                            else -> text.stopped
                         },
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
@@ -2956,7 +2961,7 @@ private fun ProxyHeroCard(
             ) {
                 Column {
                     Text(
-                        if (text.start == "Запустить") "ВХОДЯЩИЙ" else "INCOMING",
+                        text.incoming,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -2970,7 +2975,7 @@ private fun ProxyHeroCard(
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        if (text.start == "Запустить") "ИСХОДЯЩИЙ" else "OUTGOING",
+                        text.outgoing,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -3169,6 +3174,30 @@ private fun Context.isIgnoringBatteryOptimizations(): Boolean {
 }
 
 @SuppressLint("BatteryLife") // The user explicitly opts a persistent proxy out of Doze.
+/** Best-effort: opens the vendor autostart screen when known, otherwise the app details page. */
+internal fun Context.openAutostartSettings(): Boolean {
+    val vendorScreens = listOf(
+        ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"),
+        ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
+        ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"),
+        ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"),
+    )
+    for (component in vendorScreens) {
+        val opened = runCatching {
+            startActivity(Intent().setComponent(component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        }.getOrDefault(false)
+        if (opened) return true
+    }
+    return runCatching {
+        startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        true
+    }.getOrDefault(false)
+}
+
 private fun Context.requestBatteryOptimizationExemption() {
     if (isIgnoringBatteryOptimizations()) return
     val packageUri = "package:$packageName".toUri()
