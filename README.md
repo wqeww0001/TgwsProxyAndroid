@@ -17,7 +17,7 @@
 
 ## 📖 О проекте
 
-**TgwsProxyAndroid** — это клиентское Android-приложение со встроенным асинхронным **Rust + Tokio ядром** (`libtgwsproxy.so`), которое поднимает изолированный локальный MTProto-прокси `127.0.0.1:1443` прямо на вашем смартфоне без системного VPN.
+**TgwsProxyAndroid** — это клиентское Android-приложение со встроенным асинхронным **Rust + Tokio ядром** (`libtgwsproxy.so`), которое поднимает изолированный локальный MTProto-прокси (по умолчанию `127.0.0.1:1443` с динамическим fallback на свободный loopback-порт) прямо на вашем смартфоне без системного VPN.
 
 Приложение туннелирует трафик датацентров Telegram (`DC 1..5`) поверх защищённых `WSS`-соединений через **Cloudflare CDN** или прямой `WSS` к серверам Telegram (`kws{dc}.web.telegram.org`) с автоматическим прогревом пула и прозрачным fallback на прямой TCP.
 
@@ -26,24 +26,27 @@
 ## ✨ Ключевые возможности
 
 ### 🚀 Производительность и протокол
-- **Асинхронное ядро на Rust + Tokio (`libtgwsproxy.so`)**: неблокирующая обработка сокетов через JNA-мост с минимальным потреблением памяти и околонулевой задержкой.
+- **Асинхронное ядро на Rust + Tokio (`libtgwsproxy.so`)**: неблокирующая обработка сокетов через JNA-мост с минимальным потреблением памяти и околонулевой задержкой. Сборка под все основные архитектуры: `arm64-v8a`, `armeabi-v7a`, `x86_64` с нативной проверкой живости слушателя (`IsListening`).
+- **Динамический выбор порта**: основной порт — `1443`. Если он занят другим процессом, приложение автоматически находит свободный локальный порт, сохраняет его и мгновенно обновляет ссылку подключения.
 - **Гибкая маршрутизация Cloudflare CDN / Direct WSS**: переключатель приоритета (`CF-first` или сначала прямой `WSS` к DC Telegram) и умный fallback на прямой TCP.
 - **Пул быстрых WebSocket-соединений**: настраиваемый пул (`2`, `4` или `6` соединений), keepalive-пинги и автоматический перезапуск при переключении между Wi-Fi и мобильной сетью.
+- **Экспресс-тест дата-центров Telegram (DC1–DC5)**: встроенная диагностика в 1 тап — замер задержки и доступности `WSS :443` и прямого `TCP :443` до всех 5 дата-центров Telegram в реальном времени.
 
 ### 🔋 Энергоэффективность и фоновая работа
 - **Умный режим сна (Smart Standby)**: сервис отслеживает состояние экрана и активный входящий/исходящий трафик (`down` / `up`) — при выключенном дисплее и простое частота фонового опроса снижается до 30 секунд. При появлении трафика или включении экрана активный режим возвращается мгновенно.
-- **Foreground Service & Boot Receiver**: стабильная работа в фоне без выгрузки системой Android и опциональный автозапуск после перезагрузки телефона.
-- **Плитка в шторке (Quick Settings Tile)**: включение и отключение прокси в **1 тап** прямо из панели быстрых настроек Android.
+- **Надёжный автозапуск на любых прошивках**: поддержка автозапуска после перезагрузки смартфона с кнопкой быстрого перехода в настройки OEM-систем управления фоном (MIUI/HyperOS, ColorOS, Funtouch/Vivo, EMUI). При сбое автозапуска система присылает информативное уведомление с причиной.
+- **Плитка в шторке (Quick Settings Tile)**: включение и отключение прокси в **1 тап** прямо из панели быстрых настроек Android со статусом на выбранном языке.
 
 ### 🎨 Современный интерфейс (Material Design 3)
-- **4 полноценные темы оформления**: `Светлая (Light)`, `Тёмная (Dark)`, `Аврора (Aurora)` и `Закат (Sunset)` с продуманными цветовыми палитрами и автоматической адаптацией статус-бара.
+- **Тёмные темы оформления по умолчанию**: глубокая палитра `Тёмная (Dark)`, неоновая `Аврора (Aurora)` и тёплый `Закат (Sunset)` с автоматической адаптацией статус-бара (светлая тема исключена для снижения энергопотребления OLED-экранов).
+- **Мультиязычность (13 языков)**: полный перевод интерфейса, уведомлений и плитки на Русский, English, Қазақша (`kk`), O‘zbekcha (`uz`), Español (`es`), Français (`fr`), Deutsch (`de`), Polski (`pl`), 中文 (`zh`), 日本語 (`ja`), 한국어 (`ko`), ქართული (`ka`) и العربية (`ar`).
 - **Высокая отзывчивость без лишних рекомпозиций**: изолированное обновление таймера аптайма, версионированный буфер логов и виртуализированный журнал отладки на `LazyColumn`.
 - **Центр обновлений и Архив версий (Rollback)**:
   - Переключение между каналами **Стабильная (Stable)** и **Бета / Снапшот (Beta)**.
   - Окно обновлений с форматированным списком изменений и автоматическим перезапуском прокси после установки.
-  - Встроенный **Архив всех релизов** с возможностью отката на любую предыдущую версию в 1 клик.
+  - Встроенный **Архив всех релизов** с возможностью отката на любую предыдущую версию в 1 клик и автоматической очисткой кэша APK.
 - **Резервное копирование настроек**: экспорт и импорт всей конфигурации прокси в формате JSON или по ссылке.
-- **Статистика трафика**: учёт принятых и отправленных данных (`↓` / `↑`) за сегодня и за всё время, включая финальный сброс при остановке сервиса.
+- **Статистика трафика**: точный учёт принятых и отправленных данных (`↓` / `↑`) за сегодня и за всё время с гарантированным сохранением финальных байтов при остановке сервиса.
 
 ### 🔒 Безопасность
 - **Аппаратное хранилище ключей (Android Keystore)**: локальный MTProto-секрет генерируется на устройстве и шифруется алгоритмом **AES-GCM** с неэкспортируемым ключом.
@@ -57,7 +60,7 @@
 ```mermaid
 graph LR
     subgraph Android Device
-        TG["Telegram / Fork Client"] -->|"MTProto 127.0.0.1:1443"| SERVICE["ProxyService (Foreground)"]
+        TG["Telegram / Fork Client"] -->|"MTProto 127.0.0.1:1443 (auto-port)"| SERVICE["ProxyService (Foreground)"]
         TILE["Quick Settings Tile"] -.->|"1-Tap Toggle"| SERVICE
         SERVICE -->|"JNA FFI"| RUST["Rust + Tokio Core (libtgwsproxy.so)"]
     end
@@ -74,7 +77,7 @@ graph LR
 
 1. Скачайте актуальный APK со страницы **[Релизов (Releases)](https://github.com/wqeww0001/TgwsProxyAndroid/releases/latest)** и установите его.
 2. Нажмите **«Запустить»** на главном экране и дождитесь статуса **«Подключено»**.
-3. Нажмите **«Открыть в Telegram»** и подтвердите добавление прокси `127.0.0.1:1443`.
+3. Нажмите **«Открыть в Telegram»** и подтвердите добавление прокси `127.0.0.1:1443` (или динамически выбранного порта).
 
 > [!WARNING]
 > **Если при обновлении возникает ошибка «Update signing certificate mismatch» / «Приложение не установлено»:**
@@ -86,14 +89,17 @@ graph LR
 
 | Параметр | Описание | По умолчанию |
 | :--- | :--- | :--- |
+| **Язык интерфейса** | Выбор одного из 13 поддерживаемых языков (RU, EN, KK, UZ, ES, FR, DE, PL, ZH, JA, KO, KA, AR) | `Русский` |
+| **Оформление (Appearance)** | Выбор тёмной темы: `Тёмная (Dark)`, `Аврора (Aurora)`, `Закат (Sunset)` | `Тёмная (Dark)` |
+| **Тест DC1–DC5** | Диагностика в 1 тап: пинг WSS :443 и TCP :443 до дата-центров Telegram | По запросу |
 | **Cloudflare домен** | Пользовательский домен для WSS-маршрутизации (пусто = встроенный список + TCP fallback) | Встроенный |
 | **Cloudflare CDN** | Использование Cloudflare CDN для обхода DPI | Включено |
 | **Приоритет Cloudflare (`CF-first`)** | `Вкл` = сначала CDN-маршрут; `Выкл` = сначала прямой WSS к DC Telegram | Включено |
 | **Датацентры Telegram (DC → IP)** | Пользовательское перенаправление датацентров в формате `номерDC:IPv4` | По умолчанию |
 | **Пул быстрых соединений** | Количество готовых параллельных WSS-соединений (`2`, `4` или `6`) | `4` |
 | **Умный режим сна (Smart Standby)** | Снижение фоновой активности при выключенном экране и отсутствии трафика | Включено |
+| **Автозапуск прокси** | Запуск сервиса при включении устройства + быстрый доступ к OEM-настройкам | Выключено |
 | **Канал обновлений** | Выбор между `Стабильная (Stable)` и `Бета / Снапшот (Beta)` + архив версий | `Стабильная` |
-| **Оформление (Appearance)** | Выбор темы интерфейса: `Светлая`, `Тёмная`, `Аврора`, `Закат` | `Светлая` |
 
 ---
 
@@ -146,13 +152,16 @@ graph LR
 
 ## 🌐 English Summary
 
-**TgwsProxyAndroid** is a high-performance local MTProto WebSocket proxy client for Telegram on Android powered by an asynchronous **Rust + Tokio** core (`libtgwsproxy.so`) on `127.0.0.1:1443`.
+**TgwsProxyAndroid** is a high-performance local MTProto WebSocket proxy client for Telegram on Android powered by an asynchronous **Rust + Tokio** core (`libtgwsproxy.so`) on `127.0.0.1:1443` (with automatic fallback to a free loopback port if busy).
 
 ### Highlights:
-- **Rust + Tokio Core (`MTProto WS`)**: Routes Telegram DC (`1..5`) traffic over TLS 1.3 WebSockets (`WSS`) with configurable Cloudflare CDN priority (`CF-first` vs direct WSS) and automatic TCP fallback.
+- **Rust + Tokio Core (`MTProto WS`)**: Routes Telegram DC (`1..5`) traffic over TLS 1.3 WebSockets (`WSS`) with configurable Cloudflare CDN priority (`CF-first` vs direct WSS) and automatic TCP fallback. Native socket listener health check via `IsListening`.
+- **Dynamic Port Selection**: Defaults to `1443`; if the port is in use, automatically selects and saves a free local loopback port and updates the proxy link.
 - **Smart Standby Battery Saver**: Automatically throttles background polling when the screen is off and no download/upload traffic is active.
-- **Material 3 UI & 4 Themes**: Clean Jetpack Compose interface featuring `Light`, `Dark`, `Aurora`, and `Sunset` themes, vector iconography, and a virtualized `LazyColumn` debug log.
-- **In-App Updater & Version Archive**: Supports `Stable` and `Beta` update channels, formatted Markdown changelogs, automatic service restart after update, and 1-click rollback to any previous GitHub release.
+- **Material 3 UI & Dark Themes**: Sleek Jetpack Compose interface featuring deep `Dark`, `Aurora`, and `Sunset` themes optimized for OLED displays (light theme removed).
+- **Full Multilingual Support (13 Languages)**: Complete translations for Russian, English, Kazakh (`KK`), Uzbek (`UZ`), Spanish (`ES`), French (`FR`), German (`DE`), Polish (`PL`), Chinese (`ZH`), Japanese (`JA`), Korean (`KO`), Georgian (`KA`), and Arabic (`AR`), including notifications and Quick Settings tile.
+- **1-Tap Telegram DC Benchmark (DC1–DC5)**: Live latency testing to all 5 Telegram datacenters across both `WSS :443` and `TCP :443`.
+- **In-App Updater & Version Archive**: Supports `Stable` and `Beta` update channels, formatted Markdown changelogs, automatic service restart after update, automated APK cache cleanup, and 1-click rollback to any previous release.
 - **Hardware-Backed Security**: Local MTProto secret encrypted with **AES-GCM** via Android Keystore and APK signing certificate verification (`SHA-256`).
 
 ---

@@ -31,15 +31,15 @@ description: >-
    - Avoid continuous infinite canvas animations in the background to preserve battery life (`0% GPU idle overhead`).
    - Use crisp matte cards (`RoundedCornerShape(16.dp)`) with subtle `1.dp` outline borders (`MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)`).
 2. **Theme Modes**:
-   - Support all 4 theme palettes (`Light`, `Dark`, `Aurora`, `Sunset`) with semantic status accents:
+   - Support the 3 OLED dark themes (`Dark` [default], `Aurora`, `Sunset`) with semantic status accents (Light theme is omitted to maximize OLED power efficiency):
      - Active / Healthy: `SignalMint`
      - Starting / Warning: `SignalAmber`
      - Error / Beta: `MaterialTheme.colorScheme.error`
 3. **Typography & Markdown Rendering**:
    - Never display raw Markdown tokens (`**`, `##`, `` ` ``) in user-facing dialogs or cards. Always render release notes and structured descriptions through `FormattedReleaseNotes` and `parseMarkdownAnnotatedString`.
    - Use `FontFamily.Monospace` for IP addresses, ports (`127.0.0.1:1443`), build numbers, ping metrics, and cryptographic secrets.
-4. **Bilingual Support (RU / EN)**:
-   - Every new UI component, dialog, toast, or status string must support both `AppLanguage.Ru` and `AppLanguage.En`.
+4. **Multilingual Support (13 Languages via `AppLocalization.kt`)**:
+   - Every user-facing UI component, dialog, toast, notification, or tile status string must be translated across all 13 supported languages (`RU`, `EN`, `KK`, `UZ`, `ES`, `FR`, `DE`, `PL`, `ZH`, `JA`, `KO`, `KA`, `AR`).
 
 ---
 
@@ -49,5 +49,7 @@ description: >-
    - All release builds in `.github/workflows/ci.yml` must use the permanent `RELEASE_KEYSTORE_BASE64` secret (`tgwsproxy-release.jks`) so in-app updates never trigger `Update signing certificate mismatch`.
 2. **Version Bumping**:
    - Increment both `versionCode` and `versionName` in `app/build.gradle.kts` and document changes in `CHANGELOG.md`.
-3. **Unit Testing**:
-   - Run `./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease` and `cargo test --locked` to verify both the Kotlin and Rust layers.
+3. **Documentation Sync (MANDATORY)**:
+   - **Always update `README.md`** (both Russian and English Summary sections, feature lists, and configuration parameter tables) and `docs/index.html` upon every version bump / feature update to keep documentation in sync with the latest release.
+4. **Unit Testing**:
+   - Run `./gradlew testDebugUnitTest assembleDebug assembleRelease` and `cargo test --locked` to verify both the Kotlin and Rust layers.
