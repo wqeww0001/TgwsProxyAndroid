@@ -38,7 +38,7 @@ pub const CFPROXY_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 3600);
 pub const CFPROXY_DIAL_PHASE_TIMEOUT: Duration = Duration::from_secs(4);
 pub const CFPROXY_429_COOLDOWN: Duration = Duration::from_secs(45);
 pub const CFPROXY_429_MAX_COOLDOWN: Duration = Duration::from_secs(300);
-pub const CFPROXY_GLOBAL_PARALLEL: usize = 4;
+pub const CFPROXY_GLOBAL_PARALLEL: usize = 12;
 
 pub static RECV_BUF: AtomicI32 = AtomicI32::new(DEFAULT_RECV_BUF as i32);
 pub static SEND_BUF: AtomicI32 = AtomicI32::new(DEFAULT_SEND_BUF as i32);
@@ -63,6 +63,7 @@ impl Default for Cfproxy429State {
 // Cloudflare proxy config
 pub static CFPROXY_ENABLED: AtomicBool = AtomicBool::new(true);
 pub static CFPROXY_PRIORITY: AtomicBool = AtomicBool::new(true);
+pub static CFPROXY_DISABLE_TLS: AtomicBool = AtomicBool::new(false);
 
 pub struct CfproxyConfig {
     pub user_domain: String,
@@ -105,15 +106,32 @@ pub static CFPROXY_ENC: &[&str] = &[
     "ulihssf.com",
     "tmhqsdqmfpmk.com",
     "xwuwoqbm.com",
+    "orgcnunpj.com",
+    "zhkuldz.com",
+    "zypoljnslxa.com",
+    "efabnxaowuzs.com",
+    "zaftuzsftqdq.com",
 ];
 
-// DC default IPs
+// DC default IPs (direct TCP fallback)
 pub static DC_DEFAULT_IPS: Lazy<HashMap<i32, &'static str>> = Lazy::new(|| {
     let mut m = HashMap::new();
     m.insert(1, "149.154.175.50");
     m.insert(2, "149.154.167.51");
     m.insert(3, "149.154.175.100");
     m.insert(4, "149.154.167.91");
+    m.insert(5, "149.154.171.5");
+    m.insert(203, "91.105.192.100");
+    m
+});
+
+// DC default IPs for Direct WebSocket (aligned with upstream Flowseal edge IP for DC2/DC4)
+pub static DC_WS_DEFAULT_IPS: Lazy<HashMap<i32, &'static str>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    m.insert(1, "149.154.175.50");
+    m.insert(2, "149.154.167.220");
+    m.insert(3, "149.154.175.100");
+    m.insert(4, "149.154.167.220");
     m.insert(5, "149.154.171.5");
     m.insert(203, "91.105.192.100");
     m

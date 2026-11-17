@@ -17,6 +17,7 @@ internal interface ProxyLibrary : Library {
     fun SetPoolSize(size: Int)
     fun SetCfProxyCacheDir(cacheDir: String)
     fun SetCfProxyConfig(enabled: Int, priority: Int, userDomain: String)
+    fun SetCfProxyDisableTls(disable: Int)
     fun SetSecret(secret: String)
     fun GetSecretWithPrefix(): Pointer?
     fun GetStats(): Pointer?
@@ -56,6 +57,10 @@ object NativeProxy {
             if (priority) 1 else 0,
             userDomain,
         )
+    }
+
+    fun setCfProxyDisableTls(disable: Boolean) {
+        ProxyLibrary.INSTANCE.SetCfProxyDisableTls(if (disable) 1 else 0)
     }
 
     fun setSecret(secret: String) {

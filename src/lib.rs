@@ -313,6 +313,13 @@ unsafe fn set_cfproxy_config_impl(enabled: c_int, priority: c_int, c_user_domain
     }
 }
 
+#[no_mangle]
+pub extern "C" fn SetCfProxyDisableTls(disable: c_int) {
+    ffi_guard("SetCfProxyDisableTls", (), || {
+        CFPROXY_DISABLE_TLS.store(disable != 0, Ordering::Relaxed);
+    });
+}
+
 /// # Safety
 /// `c_secret` — валидная C-строка или null.
 #[no_mangle]

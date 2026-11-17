@@ -102,6 +102,8 @@ data class UiStrings(
     val dcTestSubtitle: String = "1-tap reachability & latency test (WSS :443 & TCP :443)",
     val dcTestRun: String = "Test DC1–DC5",
     val dcTestRunning: String = "Testing DC1–DC5...",
+    val cfDisableTlsTitle: String = "Disable TLS for CF (port 80)",
+    val cfDisableTlsSubtitle: String = "Use plain WS on port 80 to bypass DPI TLS blocks (MTProto stays encrypted)",
 )
 
 fun strings(language: AppLanguage): UiStrings = when (language) {
@@ -183,6 +185,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "Проверка задержки до всех 5 дата-центров в 1 тап (WSS :443 и TCP :443)",
         dcTestRun = "Проверить DC1–DC5",
         dcTestRunning = "Проверка DC1–DC5...",
+        cfDisableTlsTitle = "Без TLS для CF (порт 80)",
+        cfDisableTlsSubtitle = "Подключение по WS :80 для обхода блокировки TLS на ТСПУ (MTProto зашифрован)",
     )
     AppLanguage.En -> UiStrings(
         menu = "Menu",
@@ -262,6 +266,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "1-tap reachability & latency test (WSS :443 & TCP :443)",
         dcTestRun = "Test DC1–DC5",
         dcTestRunning = "Testing DC1–DC5...",
+        cfDisableTlsTitle = "Disable TLS for CF (port 80)",
+        cfDisableTlsSubtitle = "Use plain WS on port 80 to bypass DPI TLS blocks (MTProto stays encrypted)",
     )
     AppLanguage.Kk -> UiStrings(
         menu = "Мәзір",
@@ -341,6 +347,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "Барлық 5 дата-орталықтың кідірісін 1 басумен тексеру",
         dcTestRun = "DC1–DC5 тексеру",
         dcTestRunning = "Тексерілуде...",
+        cfDisableTlsTitle = "CF үшін TLS өшіру (80-порт)",
+        cfDisableTlsSubtitle = "DPI TLS бұғаттауын айналып өту үшін 80-порт WS қолдану (MTProto шифрланған)",
     )
     AppLanguage.Uz -> UiStrings(
         menu = "Menyu",
@@ -420,6 +428,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "Barcha 5 ta DC kechikishini 1 bosishda tekshirish (WSS va TCP)",
         dcTestRun = "DC1–DC5 ni tekshirish",
         dcTestRunning = "Tekshirilmoqda...",
+        cfDisableTlsTitle = "CF uchun TLS o‘chirish (80-port)",
+        cfDisableTlsSubtitle = "DPI TLS blokirovkasini chetlab o‘tish uchun WS :80 ishlatish (MTProto shifrlangan)",
     )
     AppLanguage.Es -> UiStrings(
         menu = "Menú",
@@ -499,6 +509,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "Prueba rápida de latencia a los 5 centros de datos (WSS y TCP)",
         dcTestRun = "Probar DC1–DC5",
         dcTestRunning = "Probando DC1–DC5...",
+        cfDisableTlsTitle = "Desactivar TLS para CF (puerto 80)",
+        cfDisableTlsSubtitle = "Usa WS :80 sin TLS para eludir bloqueos DPI (MTProto sigue cifrado)",
     )
     AppLanguage.Fr -> UiStrings(
         menu = "Menu",
@@ -578,6 +590,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "Test de latence en 1 geste vers les 5 DC (WSS et TCP)",
         dcTestRun = "Tester DC1–DC5",
         dcTestRunning = "Test DC1–DC5...",
+        cfDisableTlsTitle = "Désactiver TLS pour CF (port 80)",
+        cfDisableTlsSubtitle = "Utiliser WS :80 pour contourner le blocage TLS DPI (MTProto reste chiffré)",
     )
     AppLanguage.De -> UiStrings(
         menu = "Menü",
@@ -657,6 +671,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "Erreichbarkeits- & Latenztest für alle 5 DCs (WSS & TCP)",
         dcTestRun = "DC1–DC5 testen",
         dcTestRunning = "Teste DC1–DC5...",
+        cfDisableTlsTitle = "TLS für CF deaktivieren (Port 80)",
+        cfDisableTlsSubtitle = "WS :80 gegen DPI-TLS-Sperren nutzen (MTProto bleibt verschlüsselt)",
     )
     AppLanguage.Pl -> UiStrings(
         menu = "Menu",
@@ -736,6 +752,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "Test dostępności i opóźnień wszystkich 5 DC (WSS i TCP)",
         dcTestRun = "Testuj DC1–DC5",
         dcTestRunning = "Testowanie DC1–DC5...",
+        cfDisableTlsTitle = "Wyłącz TLS dla CF (port 80)",
+        cfDisableTlsSubtitle = "Użyj WS :80 aby ominąć blokady TLS DPI (MTProto pozostaje szyfrowany)",
     )
     AppLanguage.Zh -> UiStrings(
         menu = "菜单",
@@ -815,6 +833,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "一键测试全部 5 个数据中心的 WSS 与 TCP 延迟",
         dcTestRun = "测试 DC1–DC5",
         dcTestRunning = "正在测试 DC1–DC5...",
+        cfDisableTlsTitle = "为 CF 禁用 TLS（端口 80）",
+        cfDisableTlsSubtitle = "使用 80 端口明文 WS 绕过 DPI TLS 拦截（MTProto 仍全程加密）",
     )
     AppLanguage.Ja -> UiStrings(
         menu = "メニュー",
@@ -894,6 +914,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "全5データセンターのWSS / TCP応答速度をワンタップ測定",
         dcTestRun = "DC1–DC5 を測定",
         dcTestRunning = "DC1–DC5 を測定中...",
+        cfDisableTlsTitle = "CF の TLS を無効化（ポート 80）",
+        cfDisableTlsSubtitle = "DPI の TLS 遮断を回避するためポート 80 WS を使用（MTProto は暗号化維持）",
     )
     AppLanguage.Ko -> UiStrings(
         menu = "메뉴",
@@ -973,6 +995,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "5개 데이터센터의 WSS 및 TCP 지연 시간 원탭 테스트",
         dcTestRun = "DC1–DC5 테스트",
         dcTestRunning = "DC1–DC5 테스트 중...",
+        cfDisableTlsTitle = "CF TLS 비활성화 (포트 80)",
+        cfDisableTlsSubtitle = "DPI TLS 차단을 우회하기 위해 80포트 WS 사용 (MTProto 암호화 유지)",
     )
     AppLanguage.Ka -> UiStrings(
         menu = "მენიუ",
@@ -1052,6 +1076,8 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "ხუთივე დატა-ცენტრის დაყოვნების შემოწმება 1 დაჭერით",
         dcTestRun = "DC1–DC5 შემოწმება",
         dcTestRunning = "მოწმდება DC1–DC5...",
+        cfDisableTlsTitle = "CF-სთვის TLS გამორთვა (პორტი 80)",
+        cfDisableTlsSubtitle = "WS :80 გამოყენება DPI TLS ბლოკირების ასარიდებლად (MTProto დაშიფრულია)",
     )
     AppLanguage.Ar -> UiStrings(
         menu = "القائمة",
@@ -1131,5 +1157,7 @@ fun strings(language: AppLanguage): UiStrings = when (language) {
         dcTestSubtitle = "فحص سرعة الاستجابة لجميع مراكز البيانات الخمسة بضغطة واحدة",
         dcTestRun = "فحص DC1–DC5",
         dcTestRunning = "جاري فحص DC1–DC5...",
+        cfDisableTlsTitle = "تعطيل TLS لـ CF (المنفذ 80)",
+        cfDisableTlsSubtitle = "استخدام WS :80 لتجاوز حجب TLS عبر DPI (يبقى MTProto مشفراً)",
     )
 }

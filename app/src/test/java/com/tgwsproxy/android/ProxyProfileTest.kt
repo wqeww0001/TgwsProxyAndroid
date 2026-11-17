@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProxyProfileTest {
@@ -32,9 +33,10 @@ class ProxyProfileTest {
             enDesc = "",
             cfWorkerDomain = "worker.example.com",
             cfEnabled = false,
+            cfDisableTls = true,
             poolSize = 6,
             smartStandby = false,
-            dcMappings = "2:149.154.167.51",
+            dcMappings = "2:149.154.167.220",
         )
         val cfg = ProxyProfile.parseImport(profile.exportToJson(secret))
         assertNotNull(cfg)
@@ -42,7 +44,8 @@ class ProxyProfileTest {
         assertEquals("worker.example.com", cfg.cfWorkerDomain)
         assertEquals(6, cfg.poolSize)
         assertFalse(cfg.cfEnabled)
-        assertEquals("2:149.154.167.51", cfg.dcMappings)
+        assertTrue(cfg.cfDisableTls)
+        assertEquals("2:149.154.167.220", cfg.dcMappings)
     }
 
     @Test

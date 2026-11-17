@@ -646,10 +646,15 @@ pub async fn tcp_fallback(
 // Cfproxy fallback
 // ---------------------------------------------------------------------------
 
-async fn try_cfproxy_base_domain(dc: i32, base_domain: &str) -> (Option<RawWebSocket>, String) {
+async fn try_cfproxy_base_domain(
+    dc: i32,
+    base_domain: &str,
+    fallback_dst: &str,
+    is_user_domain: bool,
+) -> (Option<RawWebSocket>, String, Option<String>) {
     let base_domain = normalize_cf_domain(base_domain);
     if base_domain.is_empty() {
-        return (None, String::new());
+        return (None, String::new(), None);
     }
     let remaining = cfproxy_429_cooldown_remaining(&base_domain);
     if remaining > Duration::ZERO {
@@ -658,32 +663,81 @@ async fn try_cfproxy_base_domain(dc: i32, base_domain: &str) -> (Option<RawWebSo
             base_domain,
             remaining.as_secs_f64().ceil()
         );
-        return (None, String::new());
+        return (None, String::new(), Some("http 429 cooldown".to_string()));
     }
     let _permit = match acquire_cfproxy_attempt_slot().await {
         Some(p) => p,
-        None => return (None, String::new()),
+        None => return (None, String::new(), Some("canceled".to_string())),
     };
+
+    let worker_path = if !fallback_dst.is_empty() {
+        format!("/apiws?dst={}&dc={}", fallback_dst, dc)
+    } else {
+        "/apiws".to_string()
+    };
+
+    // *.workers.dev domains cannot use kws{dc}.<domain> wildcard subdomains; connect directly with worker query params.
+    if base_domain.ends_with(".workers.dev") {
+        ldebug!(" CF worker try {}", base_domain);
+        let (ws, resolved_ip, err) = cf_connect_domain(&base_domain, &worker_path, 5.0).await;
+        if let Some(e) = err {
+            let reason = e.compact();
+            if is_http_status_error(&e, 429) {
+                mark_cfproxy_429_cooldown(&base_domain, &e);
+            }
+            if !resolved_ip.is_empty() {
+                log_cf_conn_error(
+                    &format!(" CF worker fail {} via {}: {}", base_domain, resolved_ip, reason),
+                    &e,
+                );
+            } else {
+                log_cf_conn_error(&format!(" CF worker fail {}: {}", base_domain, reason), &e);
+            }
+            return (None, String::new(), Some(reason));
+        }
+        clear_cfproxy_429_cooldown(&base_domain);
+        return (ws, base_domain, None);
+    }
 
     let domain = format!("kws{}.{}", dc, base_domain);
     ldebug!(" CF try {}", domain);
 
     let (ws, resolved_ip, err) = cf_connect_domain(&domain, "/apiws", 5.0).await;
     if let Some(e) = err {
+        let mut reason = e.compact();
         // ВАЖНО (как в Go): cooldown ставим ТОЛЬКО при HTTP 429, иначе
         // любой reset/timeout выжигал бы домены и плодил лавину cooldown.
         if is_http_status_error(&e, 429) {
             mark_cfproxy_429_cooldown(&base_domain, &e);
+            log_cf_conn_error(&format!(" CF fail {}: {}", domain, reason), &e);
+            return (None, String::new(), Some(reason));
         }
         if !resolved_ip.is_empty() {
             log_cf_conn_error(
-                &format!(" CF fail {} via {}: {}", domain, resolved_ip, e.compact()),
+                &format!(" CF fail {} via {}: {}", domain, resolved_ip, reason),
                 &e,
             );
         } else {
-            log_cf_conn_error(&format!(" CF fail {}: {}", domain, e.compact()), &e);
+            log_cf_conn_error(&format!(" CF fail {}: {}", domain, reason), &e);
         }
-        return (None, String::new());
+
+        // If the user configured a custom domain that actually fronts a Cloudflare Worker
+        // (without wildcard kws{dc}.* DNS), try direct worker path as fallback.
+        if is_user_domain && !fallback_dst.is_empty() {
+            ldebug!(" CF custom worker fallback {}", base_domain);
+            let (w_ws, _w_ip, w_err) = cf_connect_domain(&base_domain, &worker_path, 5.0).await;
+            if w_ws.is_some() {
+                clear_cfproxy_429_cooldown(&base_domain);
+                return (w_ws, base_domain, None);
+            }
+            if let Some(we) = w_err {
+                if is_http_status_error(&we, 429) {
+                    mark_cfproxy_429_cooldown(&base_domain, &we);
+                }
+                reason = we.compact();
+            }
+        }
+        return (None, String::new(), Some(reason));
     }
 
     clear_cfproxy_429_cooldown(&base_domain);
@@ -692,30 +746,34 @@ async fn try_cfproxy_base_domain(dc: i32, base_domain: &str) -> (Option<RawWebSo
     } else {
         ldebug!(" CF ok {} via hostname", domain);
     }
-    (ws, base_domain)
+    (ws, base_domain, None)
 }
 
 // Только устанавливает WS-соединение через CF, НЕ трогая conn.
-// Возвращает (ws, chosen_domain). Это позволяет при провале CF
-// переиспользовать conn для TCP fallback (семантика Go сохранена).
+// Возвращает (Some((ws, chosen_domain)), None) при успехе, либо (None, Some(last_err)) при провале.
 async fn cfproxy_acquire_ws(
     dc: i32,
     is_media: bool,
+    fallback_dst: &str,
     cancel_token: &CancellationToken,
-) -> Option<(RawWebSocket, String)> {
-    let (enabled, active, domains) = {
+) -> (Option<(RawWebSocket, String)>, Option<String>) {
+    let (enabled, active, domains, is_user_domain) = {
         let cfg = CFPROXY.read();
         (
             CFPROXY_ENABLED.load(Ordering::Relaxed),
             cfg.active.clone(),
             cfg.domains.clone(),
+            !cfg.user_domain.is_empty(),
         )
     };
     if !enabled || domains.is_empty() {
-        return None;
+        return (None, None);
     }
 
     let ordered = crate::router::ordered_domains(dc, is_media, &domains, &active);
+    if ordered.is_empty() {
+        return (None, None);
+    }
 
     let m_tag = media_tag(is_media);
     ldebug!(
@@ -727,44 +785,69 @@ async fn cfproxy_acquire_ws(
 
     let mut ws: Option<RawWebSocket> = None;
     let mut chosen_domain = String::new();
+    let mut last_err: Option<String> = None;
 
-    if !ordered.is_empty() && !ordered[0].is_empty() {
-        let (w, d) = try_cfproxy_base_domain(dc, &ordered[0]).await;
+    // Fast path: only probe ordered[0] sequentially when it is already a proven healthy
+    // preferred route (or the sole domain). Otherwise race waves of 4 domains concurrently
+    // so blocked IP subnets are bypassed within seconds.
+    let mut start_idx = 0;
+    if ordered.len() == 1 || crate::router::has_healthy_preferred(dc, is_media, &ordered[0]) {
+        start_idx = 1;
+        let (w, d, err) =
+            try_cfproxy_base_domain(dc, &ordered[0], fallback_dst, is_user_domain).await;
         if w.is_some() {
             crate::router::record_success(dc, is_media, &d);
+            ws = w;
+            chosen_domain = d;
         } else {
             crate::router::record_failure(dc, is_media, &ordered[0]);
+            if err.is_some() {
+                last_err = err;
+            }
         }
-        ws = w;
-        chosen_domain = d;
     }
 
-    if ws.is_none() && ordered.len() > 1 {
-        let mut attempts = tokio::task::JoinSet::new();
-        for bd in ordered[1..].iter().cloned() {
-            let cancel = cancel_token.clone();
-            attempts.spawn(async move {
-                tokio::select! {
-                    _ = cancel.cancelled() => (bd, None),
-                    r = try_cfproxy_base_domain(dc, &bd) => {
-                        let result = r.0.map(|socket| (socket, r.1));
-                        (bd, result)
-                    },
-                }
-            });
-        }
-        while let Some(result) = attempts.join_next().await {
-            if let Ok((attempted_domain, outcome)) = result {
-                match outcome {
-                    Some((socket, domain)) => {
-                        crate::router::record_success(dc, is_media, &domain);
-                        ws = Some(socket);
-                        chosen_domain = domain;
-                        attempts.abort_all();
-                        break;
+    if ws.is_none() && start_idx < ordered.len() {
+        const WAVE_SIZE: usize = 4;
+        for wave in ordered[start_idx..].chunks(WAVE_SIZE) {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            let mut attempts = tokio::task::JoinSet::new();
+            for bd in wave.iter().cloned() {
+                let cancel = cancel_token.clone();
+                let dst = fallback_dst.to_string();
+                attempts.spawn(async move {
+                    tokio::select! {
+                        _ = cancel.cancelled() => (bd, None, None),
+                        r = try_cfproxy_base_domain(dc, &bd, &dst, is_user_domain) => {
+                            let result = r.0.map(|socket| (socket, r.1));
+                            (bd, result, r.2)
+                        },
                     }
-                    None => crate::router::record_failure(dc, is_media, &attempted_domain),
+                });
+            }
+            while let Some(result) = attempts.join_next().await {
+                if let Ok((attempted_domain, outcome, err)) = result {
+                    match outcome {
+                        Some((socket, domain)) => {
+                            crate::router::record_success(dc, is_media, &domain);
+                            ws = Some(socket);
+                            chosen_domain = domain;
+                            attempts.abort_all();
+                            break;
+                        }
+                        None => {
+                            crate::router::record_failure(dc, is_media, &attempted_domain);
+                            if err.is_some() {
+                                last_err = err;
+                            }
+                        }
+                    }
                 }
+            }
+            if ws.is_some() {
+                break;
             }
         }
     }
@@ -774,18 +857,22 @@ async fn cfproxy_acquire_ws(
             if !chosen_domain.is_empty() && chosen_domain != active {
                 set_active_domain_and_save(&chosen_domain);
             }
-            Some((w, chosen_domain))
+            (Some((w, chosen_domain)), None)
         }
         None => {
-            lwarn!(" CF fallback DC{}{}: все CF домены недоступны", dc, m_tag);
-            None
+            lwarn!(
+                " CF fallback DC{}{}: все CF домены недоступны ({})",
+                dc,
+                m_tag,
+                last_err.as_deref().unwrap_or("unknown")
+            );
+            (None, last_err)
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// doFallback — теперь CF не "съедает" conn при провале; при неуспехе CF
-// тот же conn уходит в TCP fallback (1-в-1 как Go doFallback).
+// doFallback — CF -> (optional Direct WS) -> TCP fallback на том же conn.
 // ---------------------------------------------------------------------------
 
 pub async fn do_fallback(
@@ -800,6 +887,7 @@ pub async fn do_fallback(
     tg_enc: &TrackedStream,
     tg_dec: &TrackedStream,
     cancel_token: CancellationToken,
+    allow_direct_ws: bool,
 ) -> bool {
     // Clone streams (как Go Clone())
     let clt_dec = clt_dec.clone_state();
@@ -809,10 +897,14 @@ pub async fn do_fallback(
 
     let fallback_dst = resolve_fallback_target(dc, is_media);
     let use_cf = CFPROXY_ENABLED.load(Ordering::Relaxed);
+    let mut last_cf_err: Option<String> = None;
 
     if use_cf {
         // Сначала добываем WS через CF, conn не трогаем.
-        if let Some((ws, chosen_domain)) = cfproxy_acquire_ws(dc, is_media, &cancel_token).await {
+        let (cf_ws, cf_err) =
+            cfproxy_acquire_ws(dc, is_media, &fallback_dst, &cancel_token).await;
+        last_cf_err = cf_err;
+        if let Some((ws, chosen_domain)) = cf_ws {
             STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
             linfo!(" DC{}{} подключен через CF", dc, media_tag(is_media));
 
@@ -866,7 +958,55 @@ pub async fn do_fallback(
             .await;
             return true;
         }
-        // CF не дал ws — conn НЕ тронут, идём в TCP fallback ниже.
+        // CF не дал ws — conn НЕ тронут, пробуем Direct WS / TCP fallback ниже.
+    }
+
+    // Если включён CF-first и все CF-домены недоступны — пробуем прямой WSS к Telegram DC
+    // прежде чем сдаваться на голый TCP.
+    if allow_direct_ws {
+        let ws_target = resolve_configured_target(dc, is_media).unwrap_or_else(|| {
+            DC_WS_DEFAULT_IPS
+                .get(&dc)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| fallback_dst.clone())
+        });
+        let dc_key = (dc, is_media_int(is_media));
+        let now = now_unix_f64();
+        let fail_until = DC_FAIL_UNTIL.read().get(&dc_key).copied().unwrap_or(0.0);
+        let blacklisted =
+            WS_BLACKLIST.read().get(&dc_key).copied().unwrap_or(false) && now < fail_until;
+        if !ws_target.is_empty() && !blacklisted {
+            let domains = ws_domains(dc, is_media);
+            let (ws_opt, _, _) = connect_direct_ws(&ws_target, &domains, 4.0).await;
+            if let Some(ws) = ws_opt {
+                if ws.send(relay_init).await.is_ok() {
+                    STATS.connections_ws.fetch_add(1, Ordering::Relaxed);
+                    linfo!(
+                        " DC{}{} подключен напрямую по WSS (резерв после CF)",
+                        dc,
+                        media_tag(is_media)
+                    );
+                    bridge_ws(
+                        conn,
+                        ws,
+                        label,
+                        dc,
+                        ws_target,
+                        443,
+                        is_media,
+                        splitter,
+                        clt_dec,
+                        clt_enc,
+                        tg_enc,
+                        tg_dec,
+                        cancel_token,
+                    )
+                    .await;
+                    return true;
+                }
+                ws.close().await;
+            }
+        }
     }
 
     if !fallback_dst.is_empty() {
@@ -886,7 +1026,13 @@ pub async fn do_fallback(
         )
         .await;
         if !recovered {
-            record_route_failure(dc, is_media, "all CF and TCP routes failed");
+            let detail = match last_cf_err {
+                Some(ref err) if !err.is_empty() => {
+                    format!("all CF ({}) and TCP routes failed", err)
+                }
+                _ => "all CF and TCP routes failed".to_string(),
+            };
+            record_route_failure(dc, is_media, &detail);
         }
         return recovered;
     }
@@ -1059,6 +1205,7 @@ pub async fn handle_client(
             &tg_encryptor,
             &tg_decryptor,
             cancel_token,
+            true,
         )
         .await;
         return;
@@ -1088,6 +1235,7 @@ pub async fn handle_client(
             &tg_encryptor,
             &tg_decryptor,
             cancel_token,
+            false,
         )
         .await;
         return;
@@ -1135,6 +1283,7 @@ pub async fn handle_client(
             &tg_encryptor,
             &tg_decryptor,
             cancel_token,
+            false,
         )
         .await;
         return;
@@ -1175,6 +1324,7 @@ pub async fn handle_client(
                     &tg_encryptor,
                     &tg_decryptor,
                     cancel_token,
+                    false,
                 )
                 .await;
                 return;
@@ -1197,6 +1347,7 @@ pub async fn handle_client(
                         &tg_encryptor,
                         &tg_decryptor,
                         cancel_token,
+                        false,
                     )
                     .await;
                     return;
@@ -1344,10 +1495,8 @@ pub async fn run_proxy(
 pub fn parse_cidr_pool(cidrs_str: &str) -> HashMap<i32, String> {
     let mut result = HashMap::new();
     if cidrs_str.trim().is_empty() {
-        for dc in [2, 4] {
-            if let Some(ip) = DC_DEFAULT_IPS.get(&dc) {
-                result.insert(dc, (*ip).to_string());
-            }
+        for (&dc, &ip) in DC_WS_DEFAULT_IPS.iter() {
+            result.insert(dc, ip.to_string());
         }
         return result;
     }
@@ -1374,9 +1523,13 @@ mod tests {
     #[test]
     fn empty_dc_config_warms_common_telegram_routes() {
         let routes = parse_cidr_pool("");
-        assert_eq!(routes.get(&2).map(String::as_str), Some("149.154.167.51"));
-        assert_eq!(routes.get(&4).map(String::as_str), Some("149.154.167.91"));
-        assert_eq!(routes.len(), 2);
+        assert_eq!(routes.get(&1).map(String::as_str), Some("149.154.175.50"));
+        assert_eq!(routes.get(&2).map(String::as_str), Some("149.154.167.220"));
+        assert_eq!(routes.get(&3).map(String::as_str), Some("149.154.175.100"));
+        assert_eq!(routes.get(&4).map(String::as_str), Some("149.154.167.220"));
+        assert_eq!(routes.get(&5).map(String::as_str), Some("149.154.171.5"));
+        assert_eq!(routes.get(&203).map(String::as_str), Some("91.105.192.100"));
+        assert_eq!(routes.len(), 6);
     }
 
     #[test]

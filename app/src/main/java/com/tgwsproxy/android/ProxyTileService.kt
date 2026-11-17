@@ -54,6 +54,7 @@ class ProxyTileService : TileService() {
             val cfWorkerDomain = prefs.getString(ProxyService.EXTRA_CF_WORKER_DOMAIN, "") ?: ""
             val cfEnabled = prefs.getBoolean(ProxyService.EXTRA_CF_ENABLED, true)
             val cfPriority = prefs.getBoolean(ProxyService.EXTRA_CF_PRIORITY, true)
+            val cfDisableTls = prefs.getBoolean(ProxyService.EXTRA_CF_DISABLE_TLS, false)
             val smartStandby = prefs.getBoolean(ProxyService.EXTRA_SMART_STANDBY, true)
             val poolSize = prefs.getString(ProxyService.EXTRA_POOL_SIZE, "4")?.toIntOrNull() ?: 4
             val dcIps = prefs.getString(ProxyService.EXTRA_DC_IPS, "") ?: ""
@@ -65,6 +66,7 @@ class ProxyTileService : TileService() {
                 putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanCfDomain)
                 putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
                 putExtra(ProxyService.EXTRA_CF_PRIORITY, cfPriority)
+                putExtra(ProxyService.EXTRA_CF_DISABLE_TLS, cfDisableTls)
                 putExtra(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
                 putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
                 putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcIps))

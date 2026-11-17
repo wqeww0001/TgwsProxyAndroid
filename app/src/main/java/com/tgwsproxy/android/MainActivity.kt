@@ -272,6 +272,7 @@ private fun ProxyScreen(
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
     var cfEnabled by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_ENABLED, true)) }
     var cfPriority by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_PRIORITY, true)) }
+    var cfDisableTls by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_DISABLE_TLS, false)) }
     var dcMappings by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_DC_IPS, "")) }
     var poolSize by rememberSaveable {
         mutableIntStateOf(
@@ -663,6 +664,8 @@ private fun ProxyScreen(
             enDesc = "",
             cfWorkerDomain = cfWorkerDomain,
             cfEnabled = cfEnabled,
+            cfPriority = cfPriority,
+            cfDisableTls = cfDisableTls,
             poolSize = poolSize,
             smartStandby = smartStandby,
             dcMappings = dcMappings,
@@ -678,11 +681,15 @@ private fun ProxyScreen(
                 if (cfg.secret != null) secret = cfg.secret
                 cfWorkerDomain = cfg.cfWorkerDomain
                 cfEnabled = cfg.cfEnabled
+                cfPriority = cfg.cfPriority
+                cfDisableTls = cfg.cfDisableTls
                 poolSize = cfg.poolSize
                 smartStandby = cfg.smartStandby
                 if (cfg.dcMappings.isNotBlank()) dcMappings = cfg.dcMappings
                 context.saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cfWorkerDomain)
                 context.saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
+                context.saveProxyPref(ProxyService.EXTRA_CF_PRIORITY, cfPriority)
+                context.saveProxyPref(ProxyService.EXTRA_CF_DISABLE_TLS, cfDisableTls)
                 context.saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
                 context.saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
                 if (cfg.dcMappings.isNotBlank()) context.saveProxyPref(ProxyService.EXTRA_DC_IPS, dcMappings)
@@ -845,6 +852,7 @@ private fun ProxyScreen(
                                         cfWorkerDomain = cfWorkerDomain,
                                         cfEnabled = cfEnabled,
                                         cfPriority = cfPriority,
+                                        cfDisableTls = cfDisableTls,
                                         poolSize = poolSize,
                                         dcMappings = dcMappings,
                                         smartStandby = smartStandby,
@@ -914,6 +922,11 @@ private fun ProxyScreen(
                             onCfPriorityChange = {
                                 cfPriority = it
                                 context.saveProxyPref(ProxyService.EXTRA_CF_PRIORITY, it)
+                            },
+                            cfDisableTls = cfDisableTls,
+                            onCfDisableTlsChange = {
+                                cfDisableTls = it
+                                context.saveProxyPref(ProxyService.EXTRA_CF_DISABLE_TLS, it)
                             },
                             smartStandby = smartStandby,
                             onSmartStandbyChange = {
@@ -1160,6 +1173,8 @@ private fun SettingsPage(
     onCfEnabledChange: (Boolean) -> Unit,
     cfPriority: Boolean,
     onCfPriorityChange: (Boolean) -> Unit,
+    cfDisableTls: Boolean,
+    onCfDisableTlsChange: (Boolean) -> Unit,
     smartStandby: Boolean,
     onSmartStandbyChange: (Boolean) -> Unit,
     onOpenExport: () -> Unit,
@@ -1212,6 +1227,8 @@ private fun SettingsPage(
         onCfEnabledChange = onCfEnabledChange,
         cfPriority = cfPriority,
         onCfPriorityChange = onCfPriorityChange,
+        cfDisableTls = cfDisableTls,
+        onCfDisableTlsChange = onCfDisableTlsChange,
         secret = secret,
         onCopySecret = onCopySecret,
     )
@@ -3038,6 +3055,8 @@ private fun SettingsCard(
     onCfEnabledChange: (Boolean) -> Unit,
     cfPriority: Boolean,
     onCfPriorityChange: (Boolean) -> Unit,
+    cfDisableTls: Boolean,
+    onCfDisableTlsChange: (Boolean) -> Unit,
     secret: String,
     onCopySecret: () -> Unit,
 ) {
@@ -3091,7 +3110,7 @@ private fun SettingsCard(
                 minLines = 3,
                 maxLines = 6,
                 label = { Text(if (isRu) "Датацентры Telegram (DC → IP)" else "Telegram datacenters (DC → IP)") },
-                placeholder = { Text("2:149.154.167.51\n4:149.154.167.91", fontFamily = FontFamily.Monospace) },
+                placeholder = { Text("2:149.154.167.220\n4:149.154.167.220", fontFamily = FontFamily.Monospace) },
                 isError = !ProxyConfig.isValidDcMappings(dcMappings),
                 supportingText = {
                     Text(
@@ -3132,6 +3151,25 @@ private fun SettingsCard(
                     }
                     Switch(checked = cfPriority, enabled = enabled, onCheckedChange = onCfPriorityChange)
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text.cfDisableTlsTitle,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text.cfDisableTlsSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = cfDisableTls, enabled = enabled, onCheckedChange = onCfDisableTlsChange)
+                }
             }
         }
     }
@@ -3142,6 +3180,7 @@ private fun Context.startProxyService(
     cfWorkerDomain: String,
     cfEnabled: Boolean,
     cfPriority: Boolean = true,
+    cfDisableTls: Boolean = false,
     poolSize: Int,
     dcMappings: String,
     smartStandby: Boolean = true,
@@ -3150,6 +3189,7 @@ private fun Context.startProxyService(
     saveProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
     saveProxyPref(ProxyService.EXTRA_CF_PRIORITY, cfPriority)
+    saveProxyPref(ProxyService.EXTRA_CF_DISABLE_TLS, cfDisableTls)
     saveProxyPref(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
     saveProxyPref(ProxyService.EXTRA_CF_DOMAIN, cleanWorkerDomain)
     saveProxyPref(ProxyService.EXTRA_POOL_SIZE, poolSize.toString())
@@ -3159,6 +3199,7 @@ private fun Context.startProxyService(
         .putExtra(ProxyService.EXTRA_CF_WORKER_DOMAIN, cleanWorkerDomain)
         .putExtra(ProxyService.EXTRA_CF_ENABLED, cfEnabled)
         .putExtra(ProxyService.EXTRA_CF_PRIORITY, cfPriority)
+        .putExtra(ProxyService.EXTRA_CF_DISABLE_TLS, cfDisableTls)
         .putExtra(ProxyService.EXTRA_SMART_STANDBY, smartStandby)
         .putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
         .putExtra(ProxyService.EXTRA_DC_IPS, ProxyConfig.normalizeDcMappings(dcMappings))

@@ -92,9 +92,10 @@ graph LR
 | **Язык интерфейса** | Выбор одного из 13 поддерживаемых языков (RU, EN, KK, UZ, ES, FR, DE, PL, ZH, JA, KO, KA, AR) | `Русский` |
 | **Оформление (Appearance)** | Выбор тёмной темы: `Тёмная (Dark)`, `Аврора (Aurora)`, `Закат (Sunset)` | `Тёмная (Dark)` |
 | **Тест DC1–DC5** | Диагностика в 1 тап: пинг WSS :443 и TCP :443 до дата-центров Telegram | По запросу |
-| **Cloudflare домен** | Пользовательский домен для WSS-маршрутизации (пусто = встроенный список + TCP fallback) | Встроенный |
+| **Cloudflare домен** | Пользовательский домен или Cloudflare Worker (`*.workers.dev`) для WS-маршрутизации (пусто = встроенный пул из 20 доменов + Direct WSS + TCP fallback) | Встроенный |
 | **Cloudflare CDN** | Использование Cloudflare CDN для обхода DPI | Включено |
-| **Приоритет Cloudflare (`CF-first`)** | `Вкл` = сначала CDN-маршрут; `Выкл` = сначала прямой WSS к DC Telegram | Включено |
+| **Приоритет Cloudflare (`CF-first`)** | `Вкл` = сначала CDN-маршрут (с автофоллбэком на прямой WSS); `Выкл` = сначала прямой WSS к DC1–DC5 | Включено |
+| **Без TLS для CF (порт 80)** | Подключение к Cloudflare по plain `WS :80` для обхода блокировки TLS на ТСПУ (автоматически активируется при сбое `:443`; MTProto остаётся зашифрованным) | Выключено (авто) |
 | **Датацентры Telegram (DC → IP)** | Пользовательское перенаправление датацентров в формате `номерDC:IPv4` | По умолчанию |
 | **Пул быстрых соединений** | Количество готовых параллельных WSS-соединений (`2`, `4` или `6`) | `4` |
 | **Умный режим сна (Smart Standby)** | Снижение фоновой активности при выключенном экране и отсутствии трафика | Включено |
@@ -155,7 +156,7 @@ graph LR
 **TgwsProxyAndroid** is a high-performance local MTProto WebSocket proxy client for Telegram on Android powered by an asynchronous **Rust + Tokio** core (`libtgwsproxy.so`) on `127.0.0.1:1443` (with automatic fallback to a free loopback port if busy).
 
 ### Highlights:
-- **Rust + Tokio Core (`MTProto WS`)**: Routes Telegram DC (`1..5`) traffic over TLS 1.3 WebSockets (`WSS`) with configurable Cloudflare CDN priority (`CF-first` vs direct WSS) and automatic TCP fallback. Native socket listener health check via `IsListening`.
+- **Rust + Tokio Core (`MTProto WS`)**: Routes Telegram DC (`1..5`) traffic over TLS 1.3 WebSockets (`WSS :443`) and plain HTTP WebSockets (`WS :80`, with automatic DPI TLS bypass fallback + manual toggle), across a 20-domain shuffled Cloudflare CDN pool with parallel wave probing, personal Cloudflare Worker (`*.workers.dev`) support, direct WSS fallback (`149.154.167.220` + all DC1–DC5), and native `IsListening` health check.
 - **Dynamic Port Selection**: Defaults to `1443`; if the port is in use, automatically selects and saves a free local loopback port and updates the proxy link.
 - **Smart Standby Battery Saver**: Automatically throttles background polling when the screen is off and no download/upload traffic is active.
 - **Material 3 UI & Dark Themes**: Sleek Jetpack Compose interface featuring deep `Dark`, `Aurora`, and `Sunset` themes optimized for OLED displays (light theme removed).

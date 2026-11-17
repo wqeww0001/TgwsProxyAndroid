@@ -8,10 +8,14 @@ use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::ServerName;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
+};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
@@ -115,12 +119,57 @@ impl From<std::io::Error> for WsError {
 }
 
 // ---------------------------------------------------------------------------
-// RawWebSocket
+// RawWebSocket (supports both wss://:443 and plain ws://:80)
 // ---------------------------------------------------------------------------
 
+enum WsStream {
+    Tls(TlsStream<TcpStream>),
+    Plain(TcpStream),
+}
+
+impl AsyncRead for WsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
+            WsStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for WsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            WsStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
+            WsStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsStream::Tls(s) => Pin::new(s).poll_flush(cx),
+            WsStream::Plain(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            WsStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
+            WsStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
 pub struct RawWebSocket {
-    reader: tokio::sync::Mutex<BufReader<tokio::io::ReadHalf<TlsStream<TcpStream>>>>,
-    writer: tokio::sync::Mutex<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
+    reader: tokio::sync::Mutex<BufReader<tokio::io::ReadHalf<WsStream>>>,
+    writer: tokio::sync::Mutex<tokio::io::WriteHalf<WsStream>>,
     pub closed: AtomicBool,
 }
 
@@ -289,7 +338,7 @@ impl RawWebSocket {
 // Чтение одного фрейма из уже захваченного reader (без повторного lock).
 // Используется recv_with_timeout, чтобы держать lock на всё время чтения фрейма.
 async fn read_frame_locked(
-    reader: &mut BufReader<tokio::io::ReadHalf<TlsStream<TcpStream>>>,
+    reader: &mut BufReader<tokio::io::ReadHalf<WsStream>>,
 ) -> Result<(bool, u8, Vec<u8>), WsError> {
     let mut hdr = [0u8; 2];
     reader.read_exact(&mut hdr).await?;
@@ -449,15 +498,26 @@ pub async fn ws_connect_once(
     path: &str,
     timeout: Duration,
 ) -> Result<RawWebSocket, WsError> {
+    ws_connect_once_mode(dial_addr, domain, path, timeout, true).await
+}
+
+pub async fn ws_connect_once_mode(
+    dial_addr: &str,
+    domain: &str,
+    path: &str,
+    timeout: Duration,
+    secure: bool,
+) -> Result<RawWebSocket, WsError> {
     let dial_addr = dial_addr.trim();
     if dial_addr.is_empty() {
         return Err(WsError::Other("empty dial address".to_string()));
     }
 
+    let port: u16 = if secure { 443 } else { 80 };
     let target_addr = if dial_addr.contains(':') && !dial_addr.starts_with('[') {
-        format!("[{}]:443", dial_addr)
+        format!("[{}]:{}", dial_addr, port)
     } else {
-        format!("{}:443", dial_addr)
+        format!("{}:{}", dial_addr, port)
     };
 
     let raw_conn = match tokio::time::timeout(timeout, TcpStream::connect(&target_addr)).await {
@@ -467,26 +527,31 @@ pub async fn ws_connect_once(
     };
     set_sock_opts(&raw_conn);
 
-    let connector = TlsConnector::from(TLS_CONFIG.clone());
-    let sni = server_name(domain);
+    let stream = if secure {
+        let connector = TlsConnector::from(TLS_CONFIG.clone());
+        let sni = server_name(domain);
 
-    let handshake_timeout = ws_handshake_timeout(timeout);
-    let tls_conn =
-        match tokio::time::timeout(handshake_timeout, connector.connect(sni, raw_conn)).await {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => {
-                if e.kind() != std::io::ErrorKind::ConnectionReset {
-                    ldebug!(" ws tls fail {} via {}: {}", domain, dial_addr, e);
+        let handshake_timeout = ws_handshake_timeout(timeout);
+        let tls_conn =
+            match tokio::time::timeout(handshake_timeout, connector.connect(sni, raw_conn)).await {
+                Ok(Ok(c)) => c,
+                Ok(Err(e)) => {
+                    if e.kind() != std::io::ErrorKind::ConnectionReset {
+                        ldebug!(" ws tls fail {} via {}: {}", domain, dial_addr, e);
+                    }
+                    return Err(WsError::Io(e));
                 }
-                return Err(WsError::Io(e));
-            }
-            Err(_) => {
-                ldebug!(" ws tls fail {} via {}: timeout", domain, dial_addr);
-                return Err(WsError::Timeout);
-            }
-        };
+                Err(_) => {
+                    ldebug!(" ws tls fail {} via {}: timeout", domain, dial_addr);
+                    return Err(WsError::Timeout);
+                }
+            };
+        WsStream::Tls(tls_conn)
+    } else {
+        WsStream::Plain(raw_conn)
+    };
 
-    let (read_half, mut write_half) = tokio::io::split(tls_conn);
+    let (read_half, mut write_half) = tokio::io::split(stream);
 
     // websocket key
     let mut ws_key_bytes = [0u8; 16];

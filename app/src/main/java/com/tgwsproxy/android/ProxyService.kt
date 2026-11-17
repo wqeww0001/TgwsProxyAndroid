@@ -52,6 +52,7 @@ class ProxyService : Service() {
     @Volatile private var lastCfDomain: String = ""
     @Volatile private var lastCfEnabled: Boolean = true
     @Volatile private var lastCfPriority: Boolean = true
+    @Volatile private var lastCfDisableTls: Boolean = false
     @Volatile private var lastPoolSize: Int = DEFAULT_POOL_SIZE
     @Volatile private var lastDcIps: String = ""
     @Volatile private var consecutivePortFailures: Int = 0
@@ -59,6 +60,9 @@ class ProxyService : Service() {
     @Volatile private var lastWsAttemptFailures: Long = 0
     @Volatile private var lastDownBytes: Long = 0
     @Volatile private var degradedStatsCycles: Int = 0
+    @Volatile private var lastDegradedRestartAtMs: Long = 0L
+    @Volatile private var lastLoggedFailureAtMs: Long = 0L
+    @Volatile private var lastLoggedFailureReason: String = ""
     @Volatile private var smartStandby: Boolean = true
     @Volatile private var isScreenOff: Boolean = false
     @Volatile private var lastTrafficActiveAtMs: Long = System.currentTimeMillis()
@@ -119,6 +123,8 @@ class ProxyService : Service() {
             ?: prefs.getBoolean(EXTRA_CF_ENABLED, true)
         val cfPriority = intent?.getBooleanExtra(EXTRA_CF_PRIORITY, prefs.getBoolean(EXTRA_CF_PRIORITY, true))
             ?: prefs.getBoolean(EXTRA_CF_PRIORITY, true)
+        val cfDisableTls = intent?.getBooleanExtra(EXTRA_CF_DISABLE_TLS, prefs.getBoolean(EXTRA_CF_DISABLE_TLS, false))
+            ?: prefs.getBoolean(EXTRA_CF_DISABLE_TLS, false)
         smartStandby = intent?.getBooleanExtra(EXTRA_SMART_STANDBY, prefs.getBoolean(EXTRA_SMART_STANDBY, true))
             ?: prefs.getBoolean(EXTRA_SMART_STANDBY, true)
         val poolSize = (intent?.getIntExtra(EXTRA_POOL_SIZE, -1) ?: -1)
@@ -142,6 +148,7 @@ class ProxyService : Service() {
             putString(EXTRA_CF_DOMAIN, cfDomain)
             putBoolean(EXTRA_CF_ENABLED, cfEnabled)
             putBoolean(EXTRA_CF_PRIORITY, cfPriority)
+            putBoolean(EXTRA_CF_DISABLE_TLS, cfDisableTls)
             putBoolean(EXTRA_SMART_STANDBY, smartStandby)
             putString(EXTRA_POOL_SIZE, poolSize.toString())
             putString(EXTRA_DC_IPS, dcIps)
@@ -158,6 +165,7 @@ class ProxyService : Service() {
                 cfDomain != lastCfDomain ||
                 cfEnabled != lastCfEnabled ||
                 cfPriority != lastCfPriority ||
+                cfDisableTls != lastCfDisableTls ||
                 poolSize != lastPoolSize ||
                 dcIps != lastDcIps
             if (paramsChanged && nativeInitializing.compareAndSet(false, true)) {
@@ -171,6 +179,7 @@ class ProxyService : Service() {
                         cfDomain,
                         cfEnabled,
                         cfPriority,
+                        cfDisableTls,
                         poolSize,
                         dcIps,
                         startId,
@@ -184,6 +193,7 @@ class ProxyService : Service() {
                 cfDomain,
                 cfEnabled,
                 cfPriority,
+                cfDisableTls,
                 poolSize,
                 dcIps,
                 startId,
@@ -244,6 +254,7 @@ class ProxyService : Service() {
         cfDomain: String,
         cfEnabled: Boolean,
         cfPriority: Boolean,
+        cfDisableTls: Boolean,
         poolSize: Int,
         dcIps: String,
         startId: Int,
@@ -264,6 +275,7 @@ class ProxyService : Service() {
                     cfDomain,
                     cfEnabled,
                     cfPriority,
+                    cfDisableTls,
                     poolSize,
                     dcIps,
                 )
@@ -284,6 +296,7 @@ class ProxyService : Service() {
         cfDomain: String,
         cfEnabled: Boolean,
         cfPriority: Boolean,
+        cfDisableTls: Boolean,
         poolSize: Int,
         dcIps: String,
     ) {
@@ -297,6 +310,9 @@ class ProxyService : Service() {
         lastWsAttemptFailures = 0
         lastDownBytes = 0
         degradedStatsCycles = 0
+        lastDegradedRestartAtMs = 0L
+        lastLoggedFailureAtMs = 0L
+        lastLoggedFailureReason = ""
         TrafficStatsManager.resetBaseline()
         ProxyServiceStatus.isRunning = false
         ProxyServiceStatus.isStarting = true
@@ -308,6 +324,7 @@ class ProxyService : Service() {
         lastCfDomain = cfDomain
         lastCfEnabled = cfEnabled
         lastCfPriority = cfPriority
+        lastCfDisableTls = cfDisableTls
         lastPoolSize = poolSize
         lastDcIps = dcIps
         acquireWakeLock()
@@ -329,6 +346,7 @@ class ProxyService : Service() {
                         cfDomain,
                         cfEnabled,
                         cfPriority,
+                        cfDisableTls,
                         poolSize,
                         dcIps,
                     )
@@ -371,12 +389,14 @@ class ProxyService : Service() {
         cfDomain: String,
         cfEnabled: Boolean,
         cfPriority: Boolean,
+        cfDisableTls: Boolean,
         poolSize: Int,
         dcIps: String,
     ): Int {
         NativeProxy.setPoolSize(poolSize)
         NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
         NativeProxy.setCfProxyConfig(enabled = cfEnabled, priority = cfPriority, userDomain = cfDomain)
+        NativeProxy.setCfProxyDisableTls(cfDisableTls)
         return NativeProxy.startProxy(
             host = ProxyConfig.HOST,
             port = ProxyConfig.port,
@@ -414,6 +434,7 @@ class ProxyService : Service() {
                                 lastCfDomain,
                                 lastCfEnabled,
                                 lastCfPriority,
+                                lastCfDisableTls,
                                 lastPoolSize,
                                 lastDcIps,
                             )
@@ -586,31 +607,49 @@ class ProxyService : Service() {
             lastTrafficActiveAtMs = System.currentTimeMillis()
         }
 
+        val now = System.currentTimeMillis()
         if (routeFailureDelta > 0) {
             val nativeReason = runCatching {
                 synchronized(NATIVE_CALL_LOCK) {
                     NativeProxy.getLastError().orEmpty()
                 }
             }.getOrDefault("")
-            ProxyLogger.e(
-                "Telegram transport failed +$routeFailureDelta" +
-                    nativeReason.takeIf(String::isNotBlank)?.let { ": $it" }.orEmpty(),
-            )
-            degradedStatsCycles++
+            if (nativeReason != lastLoggedFailureReason || now - lastLoggedFailureAtMs >= FAILURE_LOG_THROTTLE_MS) {
+                lastLoggedFailureReason = nativeReason
+                lastLoggedFailureAtMs = now
+                ProxyLogger.e(
+                    "Telegram transport failed +$routeFailureDelta" +
+                        nativeReason.takeIf(String::isNotBlank)?.let { ": $it" }.orEmpty(),
+                )
+            }
+            if (!downProgress) {
+                degradedStatsCycles++
+            } else {
+                degradedStatsCycles = 0
+            }
         } else if (downProgress || active == 0L) {
             degradedStatsCycles = 0
         } else if (active >= 3 && wsAttemptDelta > 0) {
             degradedStatsCycles++
-            ProxyLogger.w("Direct WS unavailable (+$wsAttemptDelta attempts); waiting for fallback")
+            if (now - lastLoggedFailureAtMs >= FAILURE_LOG_THROTTLE_MS) {
+                lastLoggedFailureAtMs = now
+                ProxyLogger.w("Direct WS unavailable (+$wsAttemptDelta attempts); waiting for fallback")
+            }
         }
 
         lastRouteFailures = routeFailures
         lastWsAttemptFailures = wsAttempts
         lastDownBytes = downBytes
 
-        if (degradedStatsCycles >= DEGRADED_STATS_CYCLES_BEFORE_RESTART) {
+        // Avoid rapid core restarts: Rust router needs its learned failure history to rotate away
+        // from DPI-blocked domains. Only rebuild after sustained total outage with a 3-min cooldown.
+        if (
+            degradedStatsCycles >= DEGRADED_STATS_CYCLES_BEFORE_RESTART &&
+            now - lastDegradedRestartAtMs >= DEGRADED_RESTART_COOLDOWN_MS
+        ) {
             degradedStatsCycles = 0
-            scheduleCoreRestart("Transport stats indicate degraded Telegram connection")
+            lastDegradedRestartAtMs = now
+            scheduleCoreRestart("Sustained transport outage; refreshing routes")
         }
     }
 
@@ -743,6 +782,7 @@ class ProxyService : Service() {
         const val EXTRA_CF_DOMAIN = "cf_domain"
         const val EXTRA_CF_ENABLED = "cf_enabled"
         const val EXTRA_CF_PRIORITY = "cf_priority"
+        const val EXTRA_CF_DISABLE_TLS = "cf_disable_tls"
         const val EXTRA_POOL_SIZE = "pool_size"
         const val EXTRA_DC_IPS = "dc_ips"
         const val EXTRA_SMART_STANDBY = "smart_standby"
@@ -759,6 +799,8 @@ class ProxyService : Service() {
         private const val PORT_FAILURES_BEFORE_RESTART = 3
         private const val CORE_RESTART_ATTEMPTS = 3
         private const val CORE_RESTART_RETRY_MS = 1_500L
-        private const val DEGRADED_STATS_CYCLES_BEFORE_RESTART = 2
+        private const val DEGRADED_STATS_CYCLES_BEFORE_RESTART = 20
+        private const val DEGRADED_RESTART_COOLDOWN_MS = 180_000L
+        private const val FAILURE_LOG_THROTTLE_MS = 15_000L
     }
 }

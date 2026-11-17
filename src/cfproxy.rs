@@ -1,8 +1,9 @@
 use crate::config::*;
-use crate::ws::{is_http_status_error, ws_connect_once, RawWebSocket, WsError};
+use crate::ws::{is_http_status_error, ws_connect_once_mode, RawWebSocket, WsError};
 use crate::{ldebug, lerror, linfo, lwarn};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
@@ -633,6 +634,38 @@ fn new_timed_attempt_timeout(base: Duration, phase: Duration) -> Duration {
     eff
 }
 
+async fn cf_connect_domain_mode(
+    domain: &str,
+    path: &str,
+    phase_timeout: Duration,
+    secure: bool,
+    cached_ip: Option<&str>,
+) -> (Option<RawWebSocket>, String, Option<WsError>) {
+    let host_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
+    match ws_connect_once_mode(domain, domain, path, host_timeout, secure).await {
+        Ok(ws) => return (Some(ws), String::new(), None),
+        Err(host_err) => {
+            if is_http_status_error(&host_err, 429) {
+                return (None, String::new(), Some(host_err));
+            }
+            let resolved_ip = match cached_ip {
+                Some(ip) if !ip.is_empty() => ip.to_string(),
+                _ => resolve_doh(domain).await.unwrap_or_default(),
+            };
+            if resolved_ip.is_empty() {
+                ldebug!(" CF DNS {} -> no result", domain);
+                return (None, String::new(), Some(host_err));
+            }
+            ldebug!(" CF DNS {} -> {}", domain, resolved_ip);
+            let ip_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
+            match ws_connect_once_mode(&resolved_ip, domain, path, ip_timeout, secure).await {
+                Ok(ws) => (Some(ws), resolved_ip, None),
+                Err(e) => (None, resolved_ip, Some(e)),
+            }
+        }
+    }
+}
+
 pub async fn cf_connect_domain(
     domain: &str,
     path: &str,
@@ -646,26 +679,69 @@ pub async fn cf_connect_domain(
         phase_timeout = CFPROXY_DIAL_PHASE_TIMEOUT;
     }
 
-    let host_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
-    match ws_connect_once(domain, domain, path, host_timeout).await {
-        Ok(ws) => return (Some(ws), String::new(), None),
-        Err(host_err) => {
-            if is_http_status_error(&host_err, 429) {
-                return (None, String::new(), Some(host_err));
-            }
-            let resolved_ip = resolve_doh(domain).await.unwrap_or_default();
-            if resolved_ip.is_empty() {
-                ldebug!(" CF DNS {} -> no result", domain);
-                return (None, String::new(), Some(host_err));
-            }
-            ldebug!(" CF DNS {} -> {}", domain, resolved_ip);
-            let ip_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
-            match ws_connect_once(&resolved_ip, domain, path, ip_timeout).await {
-                Ok(ws) => (Some(ws), resolved_ip, None),
-                Err(e) => (None, resolved_ip, Some(e)),
-            }
+    let force_plain = CFPROXY_DISABLE_TLS.load(Ordering::Relaxed);
+    if force_plain {
+        return cf_connect_domain_mode(domain, path, phase_timeout, false, None).await;
+    }
+
+    let prefer_plain = crate::router::is_plain_ws_preferred();
+    let first_secure = !prefer_plain;
+
+    let (ws, resolved_ip, first_err) =
+        cf_connect_domain_mode(domain, path, phase_timeout, first_secure, None).await;
+    if ws.is_some() {
+        return (ws, resolved_ip, None);
+    }
+
+    // Do not retry alternate port on HTTP 429 rate-limit.
+    if let Some(ref e) = first_err {
+        if is_http_status_error(e, 429) {
+            return (None, resolved_ip, first_err);
         }
     }
+
+    // Automatic transport fallback: if TLS :443 is blocked/throttled by DPI, try plain WS :80
+    // (MTProto payload inside WS is already end-to-end AES-256-CTR encrypted).
+    let second_secure = !first_secure;
+    let cached_ip = if resolved_ip.is_empty() {
+        None
+    } else {
+        Some(resolved_ip.as_str())
+    };
+    let (ws2, resolved_ip2, second_err) =
+        cf_connect_domain_mode(domain, path, phase_timeout, second_secure, cached_ip).await;
+    if ws2.is_some() {
+        if !second_secure && !prefer_plain {
+            crate::router::set_plain_ws_preferred(true);
+            linfo!(" CF: TLS :443 недоступен, автоматический переход на WS :80");
+        } else if second_secure && prefer_plain {
+            crate::router::set_plain_ws_preferred(false);
+            linfo!(" CF: восстановлен TLS :443");
+        }
+        return (ws2, resolved_ip2, None);
+    }
+
+    let final_ip = if !resolved_ip2.is_empty() {
+        resolved_ip2
+    } else {
+        resolved_ip
+    };
+    let err_out = match (first_err, second_err) {
+        (Some(e1), Some(e2)) => {
+            let p1 = if first_secure { "443" } else { "80" };
+            let p2 = if second_secure { "443" } else { "80" };
+            Some(WsError::Other(format!(
+                "p{}:{} / p{}:{}",
+                p1,
+                e1.compact(),
+                p2,
+                e2.compact()
+            )))
+        }
+        (Some(e), None) | (None, Some(e)) => Some(e),
+        (None, None) => None,
+    };
+    (None, final_ip, err_out)
 }
 
 pub fn log_cf_conn_error(msg: &str, err: &WsError) {
@@ -719,8 +795,10 @@ mod tests {
     #[test]
     fn builtin_domains_decode_to_valid_co_uk() {
         let builtins = default_cfproxy_domains();
-        assert!(!builtins.is_empty());
+        assert_eq!(builtins.len(), 20);
         assert!(builtins.iter().all(|d| d.ends_with(".co.uk")));
+        assert!(builtins.iter().any(|d| d == "fixtelega.co.uk"));
+        assert!(builtins.iter().any(|d| d == "stopblocking.co.uk"));
     }
 
     #[test]

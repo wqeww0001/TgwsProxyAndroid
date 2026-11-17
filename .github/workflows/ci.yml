@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "test/**"]
     tags: ["v*"]
   pull_request:
 
@@ -60,7 +60,7 @@ jobs:
         run: |
           for abi in arm64-v8a armeabi-v7a x86_64; do
             lib="app/src/main/jniLibs/$abi/libtgwsproxy.so"
-            for sym in StartProxy StopProxy IsListening; do
+            for sym in StartProxy StopProxy IsListening SetCfProxyDisableTls; do
               if ! grep -q "$sym" "$lib"; then
                 echo "::error::$lib does not export $sym"
                 exit 1
@@ -88,12 +88,12 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew testDebugUnitTest assembleDebug --build-cache --parallel -x lint --stacktrace
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [ -f tgwsproxy-release.jks ] && [ -n "$RELEASE_STORE_PASSWORD" ]; then
             ./gradlew assembleRelease --build-cache --parallel -x lint --stacktrace
           fi
 
       - name: Upload release APK
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/test/')
         uses: actions/upload-artifact@v4
         with:
           name: release-apk

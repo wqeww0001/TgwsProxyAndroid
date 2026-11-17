@@ -12,6 +12,7 @@ data class ProxyProfile(
     val cfWorkerDomain: String,
     val cfEnabled: Boolean,
     val cfPriority: Boolean = true,
+    val cfDisableTls: Boolean = false,
     val poolSize: Int,
     val smartStandby: Boolean,
     val dcMappings: String = "",
@@ -26,6 +27,7 @@ data class ProxyProfile(
             put("cf_worker_domain", cfWorkerDomain)
             put("cf_enabled", cfEnabled)
             put("cf_priority", cfPriority)
+            put("cf_disable_tls", cfDisableTls)
             put("pool_size", poolSize)
             put("smart_standby", smartStandby)
             put("dc_mappings", dcMappings)
@@ -38,6 +40,7 @@ data class ProxyProfile(
             val cfWorkerDomain: String,
             val cfEnabled: Boolean,
             val cfPriority: Boolean = true,
+            val cfDisableTls: Boolean = false,
             val poolSize: Int,
             val smartStandby: Boolean,
             val dcMappings: String,
@@ -56,6 +59,7 @@ data class ProxyProfile(
                         cfWorkerDomain = ProxyConfig.cleanDomain(json.optString("cf_worker_domain", "")),
                         cfEnabled = json.optBoolean("cf_enabled", true),
                         cfPriority = json.optBoolean("cf_priority", true),
+                        cfDisableTls = json.optBoolean("cf_disable_tls", false),
                         poolSize = json.optInt("pool_size", 4).takeIf { it in setOf(2, 4, 6) } ?: 4,
                         smartStandby = json.optBoolean("smart_standby", true),
                         dcMappings = json.optString("dc_mappings", ""),
