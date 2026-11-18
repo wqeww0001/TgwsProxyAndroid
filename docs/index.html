@@ -1459,9 +1459,9 @@
                     </div>
                   </div>
                   <div class="app-card" style="margin-bottom:0;">
-                    <div class="app-card-label" style="margin-bottom:6px;">ЧИСТОЕ ЯДРО V2.5.3</div>
+                    <div class="app-card-label" style="margin-bottom:6px;">ЧИСТОЕ ЯДРО V2.5.5</div>
                     <div style="font-size:11.5px; line-height:1.45; opacity:0.85;">
-                      В версии <strong>2.5.3</strong> приложение работает исключительно на едином нативном Rust-мосте <code>MTProto-over-WebSocket</code> (<code>libtgwsproxy.so</code>) с поддержкой отката версий и выбора маршрутизации.
+                      В версии <strong>2.5.5</strong> ядро Rust (<code>libtgwsproxy.so</code>) поддерживает 20 доменов Cloudflare с умной ротацией, автоматический обход DPI по WS :80, прямой WSS для DC1–DC5 и живую статистику в реальном времени.
                     </div>
                   </div>
                 </div>
@@ -1545,22 +1545,22 @@
             <tbody>
               <tr>
                 <td><strong>Банковские приложения, Госуслуги, такси</strong></td>
-                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">Работают напрямую без помех (VPN-слот свободен)</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.5)">Работают напрямую без помех (VPN-слот свободен)</td>
                 <td class="bad-val" data-label="Обычный VPN">Часто блокируют вход из-за чужого IP</td>
               </tr>
               <tr>
                 <td><strong>Расход заряда батареи</strong></td>
-                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">Минимальный (~0% при выключенном экране со Smart Standby)</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.5)">Минимальный (~0% при выключенном экране со Smart Standby)</td>
                 <td class="bad-val" data-label="Обычный VPN">Постоянный перехват пакетов всех приложений (TUN/TAP)</td>
               </tr>
               <tr>
                 <td><strong>Сбор трафика и приватность</strong></td>
-                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">100% локально на 127.0.0.1:1443 (исходный код открыт, GPLv3)</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.5)">100% локально на 127.0.0.1:1443 (исходный код открыт, GPLv3)</td>
                 <td class="bad-val" data-label="Обычный VPN">Весь DNS и трафик проходит через чужой сервер</td>
               </tr>
               <tr>
                 <td><strong>Каскадная отказоустойчивость</strong></td>
-                <td class="good-val" data-label="TG WS Proxy (v2.5.3)">Cloudflare CDN + прямой WSS к DC + прямой TCP fallback</td>
+                <td class="good-val" data-label="TG WS Proxy (v2.5.5)">Cloudflare CDN + прямой WSS к DC + прямой TCP fallback</td>
                 <td class="bad-val" data-label="Обычный VPN">Один сервер, легко блокируется по IP/сигнатуре</td>
               </tr>
             </tbody>
@@ -1867,7 +1867,7 @@
       loadGitHubTelemetry();
     }
 
-    // 5. Interactive Android App Simulator Logic (v2.5.3 Material 3 UI)
+    // 5. Interactive Android App Simulator Logic (v2.5.5 Material 3 UI)
     let simRunning = true;
     let simCfPriority = true;
     let simPoolSize = 4;
