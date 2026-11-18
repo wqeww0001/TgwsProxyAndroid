@@ -131,6 +131,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -267,6 +268,7 @@ private fun ProxyScreen(
     }
     val text = strings(language)
     val proxyStatusState = remember { mutableStateOf(ProxyStatus()) }
+    val liveStatsState = remember { mutableStateOf(LatestStats()) }
     val logLinesState = remember { mutableStateOf(emptyList<String>()) }
     var secret by remember { mutableStateOf("") }
     var cfWorkerDomain by rememberSaveable { mutableStateOf(context.getProxyPref(ProxyService.EXTRA_CF_WORKER_DOMAIN, ProxyConfig.DEFAULT_CF_WORKER_DOMAIN)) }
@@ -435,6 +437,13 @@ private fun ProxyScreen(
                 ProxyStatus(isStarting = ProxyServiceStatus.isStarting)
             }
             if (newStatus != proxyStatusState.value) proxyStatusState.value = newStatus
+            val newStats = if (running) {
+                val raw = withContext(Dispatchers.IO) { ProxyService.pollLiveStats(context) }
+                if (raw.isNotBlank()) parseStatsLine(raw) else latestStats(logLinesState.value)
+            } else {
+                LatestStats()
+            }
+            if (newStats != liveStatsState.value) liveStatsState.value = newStats
             val currentLogVer = ProxyLogger.version()
             if (currentLogVer != lastLogVer) {
                 lastLogVer = currentLogVer
@@ -831,6 +840,7 @@ private fun ProxyScreen(
                         AppTab.Home -> HomePage(
                             text = text,
                             statusProvider = { proxyStatusState.value },
+                            statsProvider = { liveStatsState.value },
                             link = link,
                             logsProvider = { logLinesState.value },
                             cfEnabled = cfEnabled,
@@ -1017,6 +1027,7 @@ private fun appBackgroundBrush(mode: AppThemeMode): Brush = when (mode) {
 private fun HomePage(
     text: UiStrings,
     statusProvider: () -> ProxyStatus,
+    statsProvider: () -> LatestStats,
     link: String,
     logsProvider: () -> List<String>,
     cfEnabled: Boolean,
@@ -1034,7 +1045,8 @@ private fun HomePage(
     val status = statusProvider()
     val logs = logsProvider()
     val trafficSummary = trafficProvider()
-    val stats = remember(logs) { latestStats(logs) }
+    val stats = statsProvider()
+    val wsTotal = (stats.ws.toIntOrNull() ?: 0) + (stats.cf.toIntOrNull() ?: 0)
     PageTitle(text.tabHome, "${ProxyConfig.HOST}:${ProxyConfig.port} · MTProto WS Proxy")
     if (availableUpdate != null) {
         UpdateBannerCard(
@@ -1058,7 +1070,7 @@ private fun HomePage(
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         StatTile(
             if (language.isCyrillicOrRu) "Пул WebSocket" else "WS Pool",
-            "${stats.ws} active",
+            "$wsTotal active",
             Modifier.weight(1f),
         )
         StatTile(
@@ -2166,24 +2178,42 @@ private fun DcBenchmarkCard(text: UiStrings) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Column {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
                                     Text(
                                         "DC${dc.dc} · ${dc.location}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        "${dc.wssHost} / ${dc.directIp}",
+                                        dc.wssHost,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        dc.directIp,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
-                                Column(horizontalAlignment = Alignment.End) {
+                                Column(
+                                    horizontalAlignment = Alignment.End,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
                                     val wssLabel = if (dc.wssPingMs > 0) "WSS ${dc.wssPingMs} ms" else "WSS —"
                                     val tcpLabel = if (dc.tcpPingMs > 0) "TCP ${dc.tcpPingMs} ms" else "TCP —"
                                     Text(
@@ -2191,6 +2221,8 @@ private fun DcBenchmarkCard(text: UiStrings) {
                                         style = MaterialTheme.typography.labelMedium,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         color = when {
                                             dc.wssPingMs in 1..150 -> SignalMint
                                             dc.wssPingMs > 150 -> SignalAmber
@@ -2201,6 +2233,8 @@ private fun DcBenchmarkCard(text: UiStrings) {
                                         tcpLabel,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         color = when {
                                             dc.tcpPingMs in 1..150 -> SignalMint
                                             dc.tcpPingMs > 150 -> SignalAmber
@@ -2380,8 +2414,8 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
 }
 
 
-private fun latestStats(logs: List<String>): LatestStats {
-    val line = logs.lastOrNull { it.contains("Rust stats:") } ?: return LatestStats()
+private fun parseStatsLine(line: String): LatestStats {
+    if (line.isBlank()) return LatestStats()
     fun value(key: String): String = line.substringAfter("$key=", "").substringBefore(" ").ifBlank { "0" }
     return LatestStats(
         active = value("active"),
@@ -2392,6 +2426,13 @@ private fun latestStats(logs: List<String>): LatestStats {
         up = value("up"),
         down = value("down"),
     )
+}
+
+private fun latestStats(logs: List<String>): LatestStats {
+    val line = logs.lastOrNull { it.contains("Proxy stats:") || it.contains("Rust stats:") }
+        ?: ProxyServiceStatus.lastStatsRaw.takeIf { it.isNotBlank() }
+        ?: return LatestStats()
+    return parseStatsLine(line)
 }
 
 @Composable

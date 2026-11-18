@@ -218,6 +218,7 @@ class ProxyService : Service() {
         ProxyServiceStatus.isStarting = false
         ProxyServiceStatus.startTime = 0
         ProxyServiceStatus.lastPing = -1
+        ProxyServiceStatus.lastStatsRaw = ""
         ProxyTileService.requestTileUpdate(this)
         lastSecret = ""
         AppDiagnostics.setProcessState(this, "proxy=stopped")
@@ -517,6 +518,7 @@ class ProxyService : Service() {
                 ProxyServiceStatus.lastPing = lastPing
 
                 if (stats.isNotBlank()) {
+                    ProxyServiceStatus.lastStatsRaw = stats
                     ProxyLogger.d("Proxy stats: $stats")
                     inspectTransportHealth(stats)
                     val downB = statLong(stats, "down_b")
@@ -775,6 +777,30 @@ class ProxyService : Service() {
     companion object {
         private val NATIVE_CALL_LOCK = Any()
         @Volatile private var activeStopDeferred: CompletableDeferred<Unit>? = null
+
+        /**
+         * Safely reads live Rust core stats for real-time UI updates and records the latest
+         * traffic delta into [TrafficStatsManager] so Today / All-Time counters tick live.
+         */
+        fun pollLiveStats(context: Context): String {
+            if (!ProxyServiceStatus.isRunning) {
+                ProxyServiceStatus.lastStatsRaw = ""
+                return ""
+            }
+            val stats = runCatching {
+                synchronized(NATIVE_CALL_LOCK) {
+                    if (!ProxyServiceStatus.isRunning) return@synchronized ""
+                    NativeProxy.getStats().orEmpty()
+                }
+            }.getOrDefault("")
+            if (stats.isNotBlank()) {
+                ProxyServiceStatus.lastStatsRaw = stats
+                val downB = stats.substringAfter("down_b=", "").substringBefore(' ').toLongOrNull() ?: 0L
+                val upB = stats.substringAfter("up_b=", "").substringBefore(' ').toLongOrNull() ?: 0L
+                TrafficStatsManager.recordTraffic(context.applicationContext, downB, upB)
+            }
+            return stats
+        }
 
         const val ACTION_STOP = "com.tgwsproxy.android.STOP"
         const val EXTRA_SECRET = "secret"

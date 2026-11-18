@@ -26,6 +26,9 @@ object ProxyServiceStatus {
         get() = _lastPing.get()
         set(value) = _lastPing.set(value)
 
+    @Volatile
+    var lastStatsRaw: String = ""
+
     fun getUptime(): String {
         if (!isRunning) return "00:00"
         val uptimeMs = System.currentTimeMillis() - startTime
