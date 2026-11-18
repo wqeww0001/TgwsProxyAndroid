@@ -189,6 +189,10 @@ pub fn record_failure(dc: i32, media: bool, domain: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
+
+    // Serialize unit tests that mutate the process-global ROUTES/PLAIN_WS_PREFERRED state.
+    static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn domains() -> Vec<String> {
         (1..=16).map(|i| format!("d{}.example", i)).collect()
@@ -196,6 +200,7 @@ mod tests {
 
     #[test]
     fn successful_domain_is_preferred_for_its_route() {
+        let _guard = TEST_LOCK.lock();
         reset();
         record_success(2, false, "d3.example");
         assert_eq!(
@@ -208,6 +213,7 @@ mod tests {
 
     #[test]
     fn failed_domain_moves_behind_healthy_candidates_globally() {
+        let _guard = TEST_LOCK.lock();
         reset();
         let list = vec![
             "one.example".into(),
@@ -229,6 +235,7 @@ mod tests {
 
     #[test]
     fn returns_up_to_route_candidate_limit() {
+        let _guard = TEST_LOCK.lock();
         reset();
         let ordered = ordered_domains(2, false, &domains(), "");
         assert_eq!(ordered.len(), ROUTE_CANDIDATE_LIMIT);
@@ -237,6 +244,7 @@ mod tests {
 
     #[test]
     fn plain_ws_preference_resets_cleanly() {
+        let _guard = TEST_LOCK.lock();
         reset();
         assert!(!is_plain_ws_preferred());
         set_plain_ws_preferred(true);
