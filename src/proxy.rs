@@ -1310,7 +1310,7 @@ pub async fn handle_client(
             &tg_encryptor,
             &tg_decryptor,
             cancel_token,
-            false,
+            true,
         )
         .await;
         return;
@@ -1351,7 +1351,7 @@ pub async fn handle_client(
                     &tg_encryptor,
                     &tg_decryptor,
                     cancel_token,
-                    false,
+                    true,
                 )
                 .await;
                 return;
@@ -1374,7 +1374,7 @@ pub async fn handle_client(
                         &tg_encryptor,
                         &tg_decryptor,
                         cancel_token,
-                        false,
+                        true,
                     )
                     .await;
                     return;

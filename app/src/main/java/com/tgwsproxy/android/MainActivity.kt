@@ -438,7 +438,7 @@ private fun ProxyScreen(
             }
             if (newStatus != proxyStatusState.value) proxyStatusState.value = newStatus
             val newStats = if (running) {
-                val raw = withContext(Dispatchers.IO) { ProxyService.pollLiveStats(context) }
+                val raw = ProxyServiceStatus.lastStatsRaw
                 if (raw.isNotBlank()) parseStatsLine(raw) else latestStats(logLinesState.value)
             } else {
                 LatestStats()

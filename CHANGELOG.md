@@ -1,5 +1,12 @@
 # История изменений
 
+## 2.5.5.2
+
+- **Устранена ошибка «The proxy you are using is not configured correctly» (продолжение v2.5.5.1):**
+  - **`allow_direct_ws = true` во всех путях `do_fallback` из `handle_client`:** в трёх ветках кода (`ws_opt.is_none()`, retry fail, retry relayInit fail) `allow_direct_ws` передавался как `false`, из-за чего Direct WSS никогда не пробовался как запасной путь при недоступности прямого WS — прокси сразу откатывался на TCP-fallback или закрывал соединение. Теперь всегда пробуется Direct WSS перед TCP.
+- **Исправлено: живая статистика всегда показывала `0 active`, `0B` на главной странице:**
+  - Вызов `NativeProxy.getStats()` из Activity через `pollLiveStats()` конкурировал с `NATIVE_CALL_LOCK` в ProxyService и мог возвращать пустую строку. Теперь Activity читает `ProxyServiceStatus.lastStatsRaw` напрямую (обновляется ProxyService каждые 3 секунды) — без конкуренции за JNI-lock.
+
 ## 2.5.5.1
 
 - **Устранена ошибка «The proxy you are using is not configured correctly and will be disabled» в Telegram:**
