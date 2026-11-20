@@ -120,19 +120,19 @@ pub static DC_DEFAULT_IPS: Lazy<HashMap<i32, &'static str>> = Lazy::new(|| {
     m.insert(2, "149.154.167.51");
     m.insert(3, "149.154.175.100");
     m.insert(4, "149.154.167.91");
-    m.insert(5, "149.154.171.5");
+    m.insert(5, "91.108.56.130");
     m.insert(203, "91.105.192.100");
     m
 });
 
-// DC default IPs for Direct WebSocket (aligned with upstream Flowseal edge IP for DC2/DC4)
+// DC default IPs for Direct WebSocket (aligned with upstream Flowseal edge IP for DC2)
 pub static DC_WS_DEFAULT_IPS: Lazy<HashMap<i32, &'static str>> = Lazy::new(|| {
     let mut m = HashMap::new();
     m.insert(1, "149.154.175.50");
     m.insert(2, "149.154.167.220");
     m.insert(3, "149.154.175.100");
-    m.insert(4, "149.154.167.220");
-    m.insert(5, "149.154.171.5");
+    m.insert(4, "149.154.167.91");
+    m.insert(5, "91.108.56.130");
     m.insert(203, "91.105.192.100");
     m
 });

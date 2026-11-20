@@ -350,29 +350,6 @@ pub async fn bridge_ws(
 
     let (mut conn_read, mut conn_write) = conn.into_split();
 
-    // ping keepalive
-    let ws_ping = ws.clone();
-    let la_ping = last_activity.clone();
-    let cancel_ping = bridge_cancel.clone();
-    let ping_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(BRIDGE_PING_INTERVAL);
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = cancel_ping.cancelled() => return,
-                _ = interval.tick() => {
-                    let idle = la_ping.lock().await.elapsed();
-                    if idle > BRIDGE_PING_INTERVAL {
-                        if ws_ping.send_ping().await.is_err() {
-                            cancel_ping.cancel();
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    });
-
     // up: client -> ws
     let ws_up = ws.clone();
     let la_up = last_activity.clone();
@@ -471,7 +448,6 @@ pub async fn bridge_ws(
     let _ = up_task.await;
     let _ = down_task.await;
     bridge_cancel.cancel();
-    ping_task.abort();
 
     ws.close().await;
 }
@@ -910,7 +886,52 @@ pub async fn do_fallback(
 
             if ws.send(relay_init).await.is_err() {
                 ws.close().await;
-                // CF умер сразу после хендшейка — пробуем TCP на том же conn.
+                // CF умер сразу после хендшейка — пробуем Direct WS перед TCP
+                if allow_direct_ws {
+                    let ws_target = resolve_configured_target(dc, is_media).unwrap_or_else(|| {
+                        DC_WS_DEFAULT_IPS
+                            .get(&dc)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| fallback_dst.clone())
+                    });
+                    let dc_key = (dc, is_media_int(is_media));
+                    let now = now_unix_f64();
+                    let fail_until = DC_FAIL_UNTIL.read().get(&dc_key).copied().unwrap_or(0.0);
+                    let blacklisted =
+                        WS_BLACKLIST.read().get(&dc_key).copied().unwrap_or(false) && now < fail_until;
+                    if !ws_target.is_empty() && !blacklisted {
+                        let domains = ws_domains(dc, is_media);
+                        let (ws_opt, _, _) = connect_direct_ws(&ws_target, &domains, 4.0).await;
+                        if let Some(dws) = ws_opt {
+                            if dws.send(relay_init).await.is_ok() {
+                                STATS.connections_ws.fetch_add(1, Ordering::Relaxed);
+                                linfo!(
+                                    " DC{}{} подключен напрямую по WSS (резерв после CF)",
+                                    dc,
+                                    media_tag(is_media)
+                                );
+                                bridge_ws(
+                                    conn,
+                                    dws,
+                                    label,
+                                    dc,
+                                    ws_target,
+                                    443,
+                                    is_media,
+                                    splitter,
+                                    clt_dec,
+                                    clt_enc,
+                                    tg_enc,
+                                    tg_dec,
+                                    cancel_token,
+                                )
+                                .await;
+                                return true;
+                            }
+                            dws.close().await;
+                        }
+                    }
+                }
                 if !fallback_dst.is_empty() {
                     let recovered = tcp_fallback(
                         conn,
@@ -1116,6 +1137,12 @@ pub async fn handle_client(
     if dc < 0 {
         dc = -dc;
     }
+    if dc >= 10000 {
+        dc -= 10000;
+    }
+    if dc == 0 {
+        dc = 2;
+    }
     if !(1..=5).contains(&dc) && dc != 203 {
         STATS.connections_bad.fetch_add(1, Ordering::Relaxed);
         return;
@@ -1235,7 +1262,7 @@ pub async fn handle_client(
             &tg_encryptor,
             &tg_decryptor,
             cancel_token,
-            false,
+            true,
         )
         .await;
         return;
@@ -1526,8 +1553,8 @@ mod tests {
         assert_eq!(routes.get(&1).map(String::as_str), Some("149.154.175.50"));
         assert_eq!(routes.get(&2).map(String::as_str), Some("149.154.167.220"));
         assert_eq!(routes.get(&3).map(String::as_str), Some("149.154.175.100"));
-        assert_eq!(routes.get(&4).map(String::as_str), Some("149.154.167.220"));
-        assert_eq!(routes.get(&5).map(String::as_str), Some("149.154.171.5"));
+        assert_eq!(routes.get(&4).map(String::as_str), Some("149.154.167.91"));
+        assert_eq!(routes.get(&5).map(String::as_str), Some("91.108.56.130"));
         assert_eq!(routes.get(&203).map(String::as_str), Some("91.105.192.100"));
         assert_eq!(routes.len(), 6);
     }
